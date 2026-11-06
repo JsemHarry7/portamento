@@ -1,0 +1,634 @@
+#!/usr/bin/env python3
+"""porta - the command line half of Portamento, a CrossOver-style launcher for Windows games on macOS.
+
+Prefixes live in ~/Library/Application Support/Portamento/prefixes/<name>, each with
+a porta.json that picks a Wine and a graphics backend. The runtime for a
+backend is built on demand as an APFS clone of that Wine (no extra disk
+space) with the backend's DLLs copied over Wine's own.
+"""
+import argparse
+import filecmp
+import hashlib
+import json
+import ntpath
+import os
+import re
+import shlex
+import shutil
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent
+# PORTA_HOME moves everything porta keeps (CI and tests use a scratch one)
+HOME = Path(os.environ.get("PORTA_HOME") or Path.home() / "Library/Application Support/Portamento")
+DOWNLOADS = HOME / "downloads"
+RUNTIMES = HOME / "runtimes"
+PREFIXES = HOME / "prefixes"
+LOGS = HOME / "logs"
+
+WINE_VERSION = "11.21"
+BASE = f"wine-{WINE_VERSION}-staging"
+WINE_APP = RUNTIMES / "Wine Staging.app/Contents/Resources/wine"
+# patched modules from scripts/build-wine-mods.sh, laid out like a Wine's lib/wine/
+MODS_DIR = RUNTIMES / f"wine-mods-{WINE_VERSION}"
+MODS = ["x86_64-unix/winemac.so", "x86_64-windows/kernelbase.dll", "x86_64-windows/ntdll.dll"]
+
+# name -> (url, directory it unpacks into, sub-directory holding the payload)
+ARCHIVES = {
+    "wine": (f"https://github.com/Gcenx/macOS_Wine_builds/releases/download/{WINE_VERSION}/wine-staging-{WINE_VERSION}-osx64.tar.xz",
+             RUNTIMES, "Wine Staging.app"),
+    "dxmt": ("https://github.com/3Shain/dxmt/releases/download/v0.80/dxmt-v0.80-builtin.tar.gz",
+             RUNTIMES / "dxmt-v0.80", "v0.80"),
+    "dxvk": ("https://github.com/Gcenx/DXVK-macOS/releases/download/v1.10.3-20230507-repack/dxvk-macOS-async-v1.10.3-20230507-repack-builtin.tar.gz",
+             RUNTIMES / "dxvk-macos-1.10.3", "dxvk-macOS-async-v1.10.3-20230507-repack-builtin"),
+    # CrossOver-based Wine 7.7 with D3DMetal 3.0, the only D3D12 path that works so far
+    "gcenx-gptk": ("https://github.com/Gcenx/game-porting-toolkit/releases/download/Game-Porting-Toolkit-3.0-3/game-porting-toolkit-3.0-3.tar.xz",
+                   RUNTIMES / "gcenx-gptk-3.0-3", "Game Porting Toolkit.app"),
+}
+
+CX_VERSION = "26.3.0"
+# Wines a prefix can be built on. A prefix stays on the Wine it was created
+# with, as each one rewrites the prefix for its own version.
+#   staging  Gcenx wine-staging with our patched modules (MODS)
+#   cx       CodeWeavers' open-source Wine from the CrossOver sources, with msync
+#   gptk     Gcenx's CrossOver-based Wine 7.7 with D3DMetal 3.0 (D3D12; current Steam crashes on it)
+WINES = {
+    "staging": RUNTIMES / BASE,
+    "cx": RUNTIMES / f"wine-cx-{CX_VERSION}",
+    "gptk": RUNTIMES / "gcenx-gptk-3.0-3/Game Porting Toolkit.app/Contents/Resources/wine",
+}
+WINE_ENV = {"cx": {"WINEMSYNC": "1"}}
+DEFAULT_WINE = "cx"
+
+# backend -> (archive, files copied into the runtime's lib/wine/<arch>/); None = the Wine's own
+BACKENDS = {
+    "dxmt": ("dxmt", {"winemetal.dll", "winemetal.so", "d3d11.dll", "dxgi.dll", "d3d10core.dll"}),
+    "dxvk": ("dxvk", {"d3d11.dll", "d3d10core.dll"}),
+    "wined3d": None,
+    "d3dmetal": None,
+}
+# backends that only exist in one Wine
+BACKEND_WINE = {"d3dmetal": "gptk"}
+DEFAULT_GFX = "dxmt"
+
+KOSMICKRISP_VERSION = "26.2.6"
+# Vulkan drivers a prefix can use: Wine's bundled MoltenVK, or Mesa's KosmicKrisp
+# built for x86_64 by scripts/build-kosmickrisp.sh (has drawIndirectCount, which
+# BeamNG's Vulkan renderer requires)
+VULKAN_DRIVERS = {
+    "moltenvk": None,
+    "kosmickrisp": RUNTIMES / f"kosmickrisp-{KOSMICKRISP_VERSION}/share/vulkan/icd.d/kosmickrisp_icd.x86_64.json",
+}
+# What porta builds itself (scripts/build-*.sh) comes prebuilt from the project's
+# GitHub releases, made by .github/workflows/runtimes.yml from the same scripts.
+# Each archive unpacks into RUNTIMES/<name>/; SHA256SUMS in the release covers them all.
+RELEASES = os.environ.get("PORTA_RELEASES", "https://github.com/JsemHarry7/portamento/releases/download")
+RUNTIME_RELEASE = "runtimes-1"
+PREBUILT = {  # name -> (script that builds it from source, version passed to it)
+    MODS_DIR.name: ("scripts/build-wine-mods.sh", WINE_VERSION),
+    f"wine-cx-{CX_VERSION}": ("scripts/build-crossover-wine.sh", CX_VERSION),
+    f"kosmickrisp-{KOSMICKRISP_VERSION}": ("scripts/build-kosmickrisp.sh", KOSMICKRISP_VERSION),
+    "selftests": ("tests/build.sh", None),  # the Windows programs `porta selftest` runs
+}
+
+# DLLs that must also sit in the prefix's system dirs (DXMT install guide).
+PREFIX_DLLS = {"dxmt": ["winemetal.dll"]}
+ARCHS = ("x86_64-windows", "i386-windows", "x86_64-unix")
+
+STEAM_EXE = r"C:\Program Files (x86)\Steam\steam.exe"
+
+
+def die(msg):
+    sys.exit(f"porta: {msg}")
+
+
+def overlay_dir(archive):
+    _, dest, sub = ARCHIVES[archive]
+    return dest / sub
+
+
+def download(url, name=None):
+    """Fetch url into DOWNLOADS once; later setups reuse the file."""
+    DOWNLOADS.mkdir(parents=True, exist_ok=True)
+    path = DOWNLOADS / (name or url.rsplit("/", 1)[1])
+    if not path.exists():
+        print(f"downloading {path.name}")
+        tmp = path.with_name(path.name + ".part")
+        subprocess.run(["curl", "-fL#", "-o", tmp, url], check=True)
+        tmp.rename(path)
+    return path
+
+
+def fetch(archive):
+    url, dest, sub = ARCHIVES[archive]
+    if (dest / sub).exists() or not url:
+        return
+    tarball = download(url)
+    dest.mkdir(parents=True, exist_ok=True)
+    subprocess.run(["tar", "-xf", tarball, "-C", dest], check=True)
+
+
+def install_prebuilt(name):
+    """Unpack RUNTIMES/<name> from the project's release. False if the release doesn't have it."""
+    base = f"{RELEASES}/{RUNTIME_RELEASE}"
+    try:
+        sums = download(f"{base}/SHA256SUMS", f"SHA256SUMS-{RUNTIME_RELEASE}")
+        tarball = download(f"{base}/{name}.tar.xz", f"{name}-{RUNTIME_RELEASE}.tar.xz")
+    except subprocess.CalledProcessError:
+        return False
+    expected = dict(line.split()[::-1] for line in sums.read_text().splitlines() if line.strip())
+    digest = hashlib.sha256()
+    with open(tarball, "rb") as f:
+        while chunk := f.read(1 << 20):
+            digest.update(chunk)
+    if expected.get(f"{name}.tar.xz") != digest.hexdigest():
+        tarball.unlink()
+        sums.unlink()
+        die(f"{name}.tar.xz doesn't match the release's SHA256SUMS (deleted both, run setup again)")
+    tmp = RUNTIMES / f".unpack-{name}"
+    shutil.rmtree(tmp, ignore_errors=True)
+    tmp.mkdir(parents=True)
+    subprocess.run(["tar", "-xf", tarball, "-C", tmp], check=True)
+    (tmp / name).rename(RUNTIMES / name)
+    tmp.rmdir()
+    print(f"installed {name}")
+    return True
+
+
+def build_from_source(name):
+    script, version = PREBUILT[name]
+    print(f"building {name} from source, this takes a while")
+    out = [RUNTIMES / name] if name == "selftests" else [version]
+    subprocess.run([ROOT / script, *out], check=True, env=dict(os.environ, PORTA_HOME=str(HOME)))
+
+
+def link_cx_libraries():
+    """The cx Wine is built against the x86_64 libraries in Gcenx's staging build
+    (freetype, gnutls, MoltenVK, ...) and loads them from its own lib/. They are
+    not shipped with it: setup clones them in from the staging Wine."""
+    cx_lib = WINES["cx"] / "lib"
+    if not cx_lib.exists():
+        return
+    for lib in sorted((RUNTIMES / BASE / "lib").glob("*.dylib")):
+        dst = cx_lib / lib.name
+        if dst.exists() or dst.is_symlink():
+            continue
+        if lib.is_symlink():
+            dst.symlink_to(os.readlink(lib))
+        else:
+            subprocess.run(["cp", "-c", lib, dst], check=True)
+
+
+def selftest_exe(name):
+    """A smoke test: built in the checkout by tests/build.sh, else the prebuilt one."""
+    local = ROOT / "tests" / name
+    return local if local.exists() else RUNTIMES / "selftests" / name
+
+
+def wine_bin(rt):
+    return rt / "bin/wine" if (rt / "bin/wine").exists() else rt / "bin/wine64"
+
+
+def combo_error(wine, gfx):
+    if BACKEND_WINE.get(gfx, wine) != wine:
+        return f"{gfx} needs the {BACKEND_WINE[gfx]} Wine, this prefix uses {wine} (porta create <name> --gfx {gfx})"
+    if wine in BACKEND_WINE.values() and gfx not in BACKEND_WINE:
+        return f"the {wine} Wine only supports {', '.join(g for g, w in BACKEND_WINE.items() if w == wine)}"
+    return None
+
+
+def check_combo(wine, gfx):
+    if err := combo_error(wine, gfx):
+        die(err)
+
+
+def runtime(wine, gfx):
+    check_combo(wine, gfx)
+    base = WINES[wine]
+    if not wine_bin(base).exists():
+        die(f"{wine} Wine missing, run: porta setup")
+    if BACKENDS[gfx] is None:
+        return base
+    dest = RUNTIMES / f"{base.name}+{gfx}"
+    if dest.exists():
+        return dest
+    archive, names = BACKENDS[gfx]
+    src = overlay_dir(archive)
+    tmp = dest.with_name(dest.name + ".tmp")
+    shutil.rmtree(tmp, ignore_errors=True)
+    subprocess.run(["cp", "-cR", base, tmp], check=True)
+    for arch in ARCHS:
+        for f in (src / arch).glob("*"):
+            if f.name in names:
+                shutil.copy2(f, tmp / "lib/wine" / arch / f.name)
+    tmp.rename(dest)
+    print(f"built runtime {dest.name}")
+    return dest
+
+
+def prefix_dir(name):
+    return PREFIXES / name
+
+
+def load(name):
+    cfg = prefix_dir(name) / "porta.json"
+    if not cfg.exists():
+        die(f"no prefix '{name}' (porta list)")
+    return json.loads(cfg.read_text())
+
+
+def save(name, cfg):
+    (prefix_dir(name) / "porta.json").write_text(json.dumps(cfg, indent=2) + "\n")
+
+
+def prefix_wine(cfg):
+    return cfg.get("wine", "staging")  # prefixes from before the field existed are all staging
+
+
+def wine_env(name, cfg, hud=False):
+    env = os.environ.copy()
+    env.update(WINEPREFIX=str(prefix_dir(name)), WINEDEBUG="-all", MVK_CONFIG_LOG_LEVEL="0")
+    env.update(WINE_ENV.get(prefix_wine(cfg), {}))
+    if icd := VULKAN_DRIVERS[cfg.get("vulkan", "moltenvk")]:
+        if not icd.exists():
+            die("KosmicKrisp missing, run: porta setup")
+        env["VK_DRIVER_FILES"] = str(icd)
+    elif (icd := WINES[prefix_wine(cfg)] / "share/vulkan/icd.d/MoltenVK_icd.json").exists():
+        # Wines that reach Vulkan through the loader need to be pointed at their MoltenVK
+        env["VK_DRIVER_FILES"] = str(icd)
+    if hud:
+        env["MTL_HUD_ENABLED"] = "1"
+    env.update(cfg.get("env", {}))
+    return env
+
+
+def sync_prefix_dlls(name, rt, gfx):
+    sysdirs = {"x86_64-windows": "system32", "i386-windows": "syswow64"}
+    for dll in PREFIX_DLLS.get(gfx, []):
+        for arch, sysdir in sysdirs.items():
+            src = rt / "lib/wine" / arch / dll
+            dst = prefix_dir(name) / "drive_c/windows" / sysdir / dll
+            if src.exists() and not (dst.exists() and filecmp.cmp(src, dst, shallow=False)):
+                shutil.copy2(src, dst)
+
+
+def cmd_setup(args):
+    if subprocess.run(["arch", "-x86_64", "/bin/sh", "-c", "true"], capture_output=True).returncode:
+        print("installing Rosetta 2")
+        subprocess.run(["softwareupdate", "--install-rosetta", "--agree-to-license"], check=True)
+    for archive in ARCHIVES:
+        fetch(archive)
+    base = RUNTIMES / BASE
+    if not base.exists():
+        tmp = base.with_name(base.name + ".tmp")
+        shutil.rmtree(tmp, ignore_errors=True)
+        subprocess.run(["cp", "-cR", WINE_APP, tmp], check=True)
+        tmp.rename(base)
+    for name in PREBUILT:
+        if (RUNTIMES / name).exists() or (name == "selftests" and (ROOT / "tests/d3d11test.exe").exists()):
+            continue
+        if args.build or not install_prebuilt(name):
+            build_from_source(name)
+    link_cx_libraries()
+    for gfx in BACKENDS:
+        if gfx in BACKEND_WINE:  # our patches are for the staging Wine only
+            continue
+        rt = runtime("staging", gfx)
+        for mod in MODS:
+            src, dst = MODS_DIR / mod, rt / "lib/wine" / mod
+            if not filecmp.cmp(src, dst, shallow=False):
+                # replace rather than overwrite, running processes may have it mapped
+                shutil.copy2(src, dst.with_suffix(".tmp"))
+                os.replace(dst.with_suffix(".tmp"), dst)
+                print(f"updated {dst.name} in {rt.name}")
+    print(f"ready: {HOME}")
+
+
+def cmd_create(args):
+    pfx = prefix_dir(args.name)
+    if (pfx / "porta.json").exists():
+        die(f"prefix '{args.name}' already exists")
+    wine = args.wine or BACKEND_WINE.get(args.gfx, DEFAULT_WINE)
+    rt = runtime(wine, args.gfx)
+    pfx.mkdir(parents=True, exist_ok=True)
+    cfg = {"wine": wine, "gfx": args.gfx, "exe": args.exe or "", "args": [], "env": {}}
+    save(args.name, cfg)
+    if (pfx / "system.reg").exists():
+        print(f"adopted existing prefix {pfx}")
+        return
+    env = wine_env(args.name, cfg)
+    subprocess.run([wine_bin(rt), "wineboot", "--init"], env=env, check=True, capture_output=True)
+    subprocess.run([rt / "bin/wineserver", "-w"], env=env, check=True)
+    print(f"created {pfx}")
+
+
+STEAM_DIR = "drive_c/Program Files (x86)/Steam"
+STEAM_TOOL_APPS = {"228980"}  # Steamworks Common Redistributables
+
+
+def steam_games(name):
+    """Games installed through the prefix's Steam, from its app manifests."""
+    steam = prefix_dir(name) / STEAM_DIR
+    games = []
+    for acf in sorted((steam / "steamapps").glob("appmanifest_*.acf")):
+        fields = dict(re.findall(r'^\s*"(appid|name|installdir)"\s+"([^"]*)"', acf.read_text(errors="replace"), re.M))
+        if fields.get("appid", "") in STEAM_TOOL_APPS:
+            continue
+        folder = steam / "steamapps/common" / fields.get("installdir", "")
+        games.append({"name": fields.get("name", acf.stem), "appid": fields.get("appid", ""), "kind": "steam",
+                      "exe": STEAM_EXE, "args": ["-applaunch", fields.get("appid", "")],
+                      "art": str(steam / "appcache/librarycache" / fields.get("appid", "")),
+                      "folder": str(folder)})
+    return games
+
+
+def programs(name, cfg):
+    """What the prefix can launch: its default program, Steam games and programs added by hand.
+    An added program with a Steam game's appid replaces how that game is launched."""
+    found = []
+    if cfg.get("exe"):
+        found.append({"name": ntpath.basename(cfg["exe"]).removesuffix(".exe").removesuffix(".EXE"),
+                      "kind": "default", "exe": cfg["exe"], "args": cfg.get("args", [])})
+    games = {g["appid"]: g for g in steam_games(name)}
+    for p in cfg.get("programs", []):
+        if p.get("appid") in games:
+            games[p["appid"]].update(exe=p["exe"], args=p.get("args", []))
+        else:
+            found.append(dict(p, kind="custom"))
+    return found + list(games.values())
+
+
+def cmd_list(args):
+    prefixes = [(cfg.parent.name, json.loads(cfg.read_text())) for cfg in sorted(PREFIXES.glob("*/porta.json"))]
+    if args.json:
+        print(json.dumps({
+            "prefixes": [{"name": n, "wine": prefix_wine(c), "gfx": c["gfx"], "vulkan": c.get("vulkan", "moltenvk"),
+                          "args": c.get("args", []), "env": c.get("env", {}), "path": str(prefix_dir(n)),
+                          "programs": programs(n, c)} for n, c in prefixes],
+            "wines": {w: wine_bin(p).exists() for w, p in WINES.items()},
+            "backends": {g: not combo_error(DEFAULT_WINE, g) for g in BACKENDS},
+            "vulkan": {v: icd is None or icd.exists() for v, icd in VULKAN_DRIVERS.items()},
+            "defaults": {"wine": DEFAULT_WINE, "gfx": DEFAULT_GFX},
+        }, indent=2))
+        return
+    for n, c in prefixes:
+        print(f"{n:16} wine={prefix_wine(c):8} gfx={c['gfx']:8} {c.get('exe', '')}")
+    print("\nwines:", ", ".join(WINES), f"(default {DEFAULT_WINE})")
+    print("backends:", ", ".join(BACKENDS), f"(default {DEFAULT_GFX})")
+
+
+def cmd_program(args):
+    cfg = load(args.name)
+    progs = [p for p in cfg.get("programs", []) if p["name"] != args.title]
+    if args.action == "add":
+        if not args.exe:
+            die("porta program add <prefix> <name> <exe> [args ...]")
+        entry = {"name": args.title, "exe": args.exe, "args": args.args}
+        if args.appid:
+            entry["appid"] = args.appid
+        progs.append(entry)
+    cfg["programs"] = progs
+    save(args.name, cfg)
+
+
+def cmd_set(args):
+    cfg = load(args.name)
+    args.value = " ".join(args.value)
+    if args.key == "gfx":
+        if args.value not in BACKENDS:
+            die(f"unknown backend '{args.value}', pick one of: {', '.join(BACKENDS)}")
+        check_combo(prefix_wine(cfg), args.value)
+        cfg["gfx"] = args.value
+        print("restart the prefix for this to apply: porta kill", args.name)
+    elif args.key == "vulkan":
+        if args.value not in VULKAN_DRIVERS:
+            die(f"unknown Vulkan driver '{args.value}', pick one of: {', '.join(VULKAN_DRIVERS)}")
+        cfg["vulkan"] = args.value
+    elif args.key == "exe":
+        cfg["exe"] = args.value
+    elif args.key == "args":
+        cfg["args"] = shlex.split(args.value)
+    elif args.key == "env":
+        key, _, val = args.value.partition("=")
+        if val:
+            cfg["env"][key] = val
+        else:
+            cfg["env"].pop(key, None)
+    save(args.name, cfg)
+
+
+def cmd_run(args):
+    if not args.exe and args.args:
+        die(f"options go before the prefix name: porta run {' '.join(args.args)} {args.name}")
+    cfg = load(args.name)
+    gfx = args.gfx or cfg["gfx"]
+    exe = args.exe or cfg.get("exe")
+    if not exe:
+        die(f"no exe given and none set (porta set {args.name} exe ...)")
+    rt = runtime(prefix_wine(cfg), gfx)
+    sync_prefix_dlls(args.name, rt, gfx)
+    cmd = [str(wine_bin(rt)), exe, *(args.args if args.exe else cfg.get("args", []))]
+    env = wine_env(args.name, cfg, args.hud)
+    if args.fg:
+        os.execve(cmd[0], cmd, env)
+    LOGS.mkdir(parents=True, exist_ok=True)
+    log = LOGS / f"{args.name}-{ntpath.basename(exe).lower().removesuffix('.exe')}.log"
+    with open(log, "w") as out:
+        subprocess.Popen(cmd, env=env, stdout=out, stderr=subprocess.STDOUT, start_new_session=True)
+    print(f"started {exe} with {gfx}, log: {log}")
+
+
+def cmd_wine(args):
+    cfg = load(args.name)
+    rt = runtime(prefix_wine(cfg), cfg["gfx"])
+    wine = str(wine_bin(rt))
+    os.execve(wine, [wine, *args.args], wine_env(args.name, cfg))
+
+
+def cmd_override(args):
+    cfg = load(args.name)
+    rt = runtime(prefix_wine(cfg), cfg["gfx"])
+    dll, _, order = args.dll.partition("=")
+    key = rf"HKCU\Software\Wine\AppDefaults\{args.exe}\DllOverrides"
+    if order:
+        cmd = ["reg", "add", key, "/v", dll, "/d", order, "/f"]
+    else:
+        cmd = ["reg", "delete", key, "/v", dll, "/f"]
+    subprocess.run([wine_bin(rt), *cmd], env=wine_env(args.name, cfg), check=True, capture_output=True)
+    print(f"{args.exe}: {dll} = {order or 'default'}")
+
+
+def cmd_kill(args):
+    cfg = load(args.name)
+    rt = runtime(prefix_wine(cfg), cfg["gfx"])
+    subprocess.run([rt / "bin/wineserver", "-k"], env=wine_env(args.name, cfg))
+
+
+# smoke tests from tests/build.sh: name -> (exe, depends on the graphics backend, depends on the Vulkan driver)
+SELFTESTS = {
+    "d3d9": ("d3d9test.exe", False, True),     # wined3d, which renders through Vulkan
+    "d3d11": ("d3d11test.exe", True, True),
+    "d3d12": ("d3d12test.exe", True, True),    # vkd3d on Vulkan, or D3DMetal; DXMT replaces dxgi
+    "vulkan": ("vktest.exe", False, True),
+    "opengl": ("gltest.exe", False, False),
+}
+# Wines whose Vulkan goes through a loader that honours VK_DRIVER_FILES
+LOADER_WINES = {"staging", "cx"}
+
+
+def selftest_prefix(wine):
+    """A scratch prefix per Wine, with the crash debugger off so a crash ends the test."""
+    name = f"selftest-{wine}"
+    if not (prefix_dir(name) / "porta.json").exists():
+        gfx = next(g for g in BACKENDS if not combo_error(wine, g))
+        cmd_create(argparse.Namespace(name=name, wine=wine, gfx=gfx, exe=None))
+        cfg = load(name)
+        subprocess.run([wine_bin(runtime(wine, gfx)), "reg", "add",
+                        r"HKLM\Software\Microsoft\Windows NT\CurrentVersion\AeDebug",
+                        "/v", "Debugger", "/d", "", "/f"], env=wine_env(name, cfg), capture_output=True)
+    return name
+
+
+def run_selftest(prefix, wine, gfx, vulkan, test, timeout):
+    cfg = dict(load(prefix), gfx=gfx, vulkan=vulkan)
+    rt = runtime(wine, gfx)
+    env = wine_env(prefix, cfg)
+    sync_prefix_dlls(prefix, rt, gfx)
+    cmd = [str(wine_bin(rt)), str(selftest_exe(SELFTESTS[test][0])), "120"]
+    timed_out = False
+    try:
+        proc = subprocess.run(cmd, env=env, capture_output=True, timeout=timeout)
+        out = (proc.stdout + proc.stderr).decode(errors="replace")
+    except subprocess.TimeoutExpired as e:
+        out = ((e.stdout or b"") + (e.stderr or b"")).decode(errors="replace")
+        timed_out = True
+    finally:
+        subprocess.run([rt / "bin/wineserver", "-k"], env=env, capture_output=True)
+
+    lines = [l.strip() for l in out.replace("\r", "").splitlines()]
+    fps = next((m.group(1) for l in lines if (m := re.search(r"\((\d+) fps\)", l))), None)
+    info = next((l for l in lines if l.startswith(("adapter:", "device:", "renderer:"))), "")
+    if "OK" in lines:
+        status = f"OK {fps}" if fps else "OK"
+    elif any("Unhandled" in l or "failed to initialize" in l for l in lines):
+        status = "crash"
+    elif timed_out:
+        status = "timeout"
+    else:
+        status = "FAIL"
+    detail = next((l.removeprefix("FAIL").strip() for l in lines if l.startswith("FAIL")), "")
+    return {"status": status, "fps": fps and int(fps), "info": info, "detail": detail}
+
+
+def cmd_selftest(args):
+    pick = lambda value, every: value.split(",") if value else list(every)
+    tests = pick(args.test, SELFTESTS)
+    configs = [(w, g, v) for w in pick(args.wine, WINES) if wine_bin(WINES[w]).exists()
+               for g in pick(args.gfx, BACKENDS) if not combo_error(w, g)
+               for v in pick(args.vulkan, VULKAN_DRIVERS)
+               if v == "moltenvk" or (w in LOADER_WINES and VULKAN_DRIVERS[v].exists())]
+    print("the tests open windows briefly; fps are for a trivial scene, not game performance\n")
+
+    results, rows = {}, []
+    for wine, gfx, vulkan in configs:
+        prefix = selftest_prefix(wine)
+        row = {}
+        for test in tests:
+            _, uses_gfx, uses_vulkan = SELFTESTS[test]
+            key = (wine, gfx if uses_gfx else "-", vulkan if uses_vulkan else "-", test)
+            if key not in results:
+                results[key] = run_selftest(prefix, wine, gfx, vulkan, test, args.timeout)
+                print(f"  {wine}/{gfx}/{vulkan} {test}: {results[key]['status']} {results[key]['detail']}")
+            row[test] = results[key]["status"]
+        rows.append((f"{wine}/{gfx}/{vulkan}", row))
+
+    width = max(len(name) for name, _ in rows) if rows else 10
+    print("\n" + "config".ljust(width) + "".join(t.rjust(10) for t in tests))
+    for name, row in rows:
+        print(name.ljust(width) + "".join(row[t].rjust(10) for t in tests))
+
+    LOGS.mkdir(parents=True, exist_ok=True)
+    report = LOGS / f"selftest-{time.strftime('%Y%m%d-%H%M%S')}.json"
+    report.write_text(json.dumps([dict(zip(("wine", "gfx", "vulkan", "test"), k), **v)
+                                  for k, v in results.items()], indent=2) + "\n")
+    print(f"\ndetails: {report}")
+
+
+def main():
+    p = argparse.ArgumentParser(prog="porta", description=__doc__.splitlines()[0])
+    sub = p.add_subparsers(dest="cmd", required=True)
+
+    su = sub.add_parser("setup", help="download Wine, DXMT, DXVK, D3DMetal and Portamento's own runtimes")
+    su.add_argument("--build", action="store_true",
+                    help="build Portamento's runtimes from source instead of downloading them (needs Homebrew)")
+    su.set_defaults(fn=cmd_setup)
+
+    c = sub.add_parser("create", help="create a prefix (or adopt an existing one)")
+    c.add_argument("name")
+    c.add_argument("--wine", choices=WINES, help=f"default {DEFAULT_WINE}, or the one the backend needs")
+    c.add_argument("--gfx", choices=BACKENDS, default=DEFAULT_GFX)
+    c.add_argument("--exe", help=f"default program, e.g. '{STEAM_EXE}'")
+    c.set_defaults(fn=cmd_create)
+
+    l = sub.add_parser("list", help="list prefixes and graphics backends")
+    l.add_argument("--json", action="store_true", help="machine-readable, with each prefix's programs")
+    l.set_defaults(fn=cmd_list)
+
+    pg = sub.add_parser("program", help="add or remove a program in a prefix",
+                        usage="porta program add [--appid ID] prefix name exe [args ...] | porta program remove prefix name")
+    pg.add_argument("action", choices=["add", "remove"])
+    pg.add_argument("name", help="prefix")
+    pg.add_argument("title", help="program name shown in the library")
+    pg.add_argument("exe", nargs="?")
+    pg.add_argument("args", nargs=argparse.REMAINDER)
+    pg.add_argument("--appid", help="Steam appid, to change how that game is launched")
+    pg.set_defaults(fn=cmd_program)
+
+    s = sub.add_parser("set", help="change a prefix setting")
+    s.add_argument("name")
+    s.add_argument("key", choices=["gfx", "vulkan", "exe", "args", "env"])
+    s.add_argument("value", nargs=argparse.REMAINDER,
+                   help="may start with '-'; for env: KEY=VALUE (KEY= removes it)")
+    s.set_defaults(fn=cmd_set)
+
+    r = sub.add_parser("run", help="run the prefix's program or the given exe",
+                       usage="porta run [--gfx GFX] [--hud] [--fg] name [exe [args ...]]")
+    r.add_argument("name")
+    r.add_argument("exe", nargs="?", help="everything after it is passed to the program")
+    r.add_argument("args", nargs=argparse.REMAINDER)
+    r.add_argument("--gfx", choices=BACKENDS, help="override the backend for this run")
+    r.add_argument("--hud", action="store_true", help="show the Metal performance HUD")
+    r.add_argument("--fg", action="store_true", help="stay attached instead of logging to a file")
+    r.set_defaults(fn=cmd_run)
+
+    w = sub.add_parser("wine", help="run any wine command in a prefix, e.g. winecfg")
+    w.add_argument("name")
+    w.add_argument("args", nargs=argparse.REMAINDER)
+    w.set_defaults(fn=cmd_wine)
+
+    o = sub.add_parser("override", help="per-program DLL load order, e.g. d3dcompiler_47=native")
+    o.add_argument("name")
+    o.add_argument("exe", help="program file name, e.g. BeamNG.drive.x64.exe")
+    o.add_argument("dll", help="DLL=ORDER (native, builtin, 'native,builtin'); DLL= resets it")
+    o.set_defaults(fn=cmd_override)
+
+    k = sub.add_parser("kill", help="stop everything running in a prefix")
+    k.add_argument("name")
+    k.set_defaults(fn=cmd_kill)
+
+    t = sub.add_parser("selftest", help="run the smoke tests against every Wine / backend / Vulkan driver")
+    t.add_argument("--wine", help=f"comma-separated subset of {','.join(WINES)}")
+    t.add_argument("--gfx", help=f"comma-separated subset of {','.join(BACKENDS)}")
+    t.add_argument("--vulkan", help=f"comma-separated subset of {','.join(VULKAN_DRIVERS)}")
+    t.add_argument("--test", help=f"comma-separated subset of {','.join(SELFTESTS)}")
+    t.add_argument("--timeout", type=int, default=30, help="seconds per test (default 30)")
+    t.set_defaults(fn=cmd_selftest)
+
+    args = p.parse_args()
+    args.fn(args)
+
+
+if __name__ == "__main__":
+    main()

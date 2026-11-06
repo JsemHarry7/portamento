@@ -1,0 +1,50 @@
+--- a/dlls/kernelbase/process.c	2026-10-30 21:52:31
++++ b/dlls/kernelbase/process.c	2026-11-06 15:15:47
+@@ -519,7 +519,34 @@
+     RtlFreeUnicodeString( &titleW );
+     return ret;
+ }
++
++/***********************************************************************
++ *           get_steamwebhelper_cmdline
++ *
++ * HACK: Chromium composites from its GPU process into a window owned by the
++ * browser process.  The Mac driver can't show drawing done by another
++ * process, so Steam's web helper comes up black; keep the GPU thread in the
++ * browser process.  Child processes carry --type= and are left alone.
++ */
++static WCHAR *get_steamwebhelper_cmdline( const WCHAR *app_name, const WCHAR *cmdline )
++{
++    static const WCHAR arg[] = L" --in-process-gpu";
++    const WCHAR *base = app_name, *s;
++    WCHAR *ret;
+ 
++    for (s = app_name; *s; s++)
++        if (*s == '\\' || *s == '/') base = s + 1;
++    if (wcsicmp( base, L"steamwebhelper.exe" )) return NULL;
++    if (wcsstr( cmdline, L"--type=" ) || wcsstr( cmdline, arg + 1 )) return NULL;
++
++    if (!(ret = RtlAllocateHeap( GetProcessHeap(), 0, (lstrlenW( cmdline ) + ARRAY_SIZE(arg)) * sizeof(WCHAR) )))
++        return NULL;
++    lstrcpyW( ret, cmdline );
++    lstrcatW( ret, arg );
++    TRACE( "steamwebhelper cmdline %s\n", debugstr_w(ret) );
++    return ret;
++}
++
+ /**********************************************************************
+  *           CreateProcessInternalW   (kernelbase.@)
+  */
+@@ -560,6 +587,12 @@
+         app_name = name;
+     }
+ 
++    if ((p = get_steamwebhelper_cmdline( app_name, tidy_cmdline )))
++    {
++        if (tidy_cmdline != cmd_line) HeapFree( GetProcessHeap(), 0, tidy_cmdline );
++        tidy_cmdline = p;
++    }
++
+     /* Warn if unsupported features are used */
+ 
+     if (flags & (IDLE_PRIORITY_CLASS | HIGH_PRIORITY_CLASS | REALTIME_PRIORITY_CLASS |

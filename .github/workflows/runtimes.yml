@@ -1,0 +1,131 @@
+# Builds the runtimes `porta setup` downloads (everything in porta's PREBUILT)
+# from source and publishes them, with their patched sources, as a release.
+#
+# Releases are never changed after the fact: build a new tag (runtimes-2, ...)
+# and then point RUNTIME_RELEASE in porta at it.
+name: Runtimes
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to create, e.g. runtimes-2 (must not exist yet)
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: ${{ matrix.script }}
+    runs-on: macos-26
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - script: scripts/build-wine-mods.sh
+            brew: bison autoconf mingw-w64
+          - script: scripts/build-crossover-wine.sh
+            brew: bison mingw-w64 freetype gnutls
+            needs-staging: true
+          - script: scripts/build-kosmickrisp.sh
+            brew: meson ninja pkgconf bison llvm spirv-llvm-translator libclc
+          - script: tests/build.sh
+            brew: mingw-w64 vulkan-headers
+    env:
+      PORTA_NICE: ""  # full speed, the runner has nothing else to do
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up
+        run: |
+          echo "PORTA_HOME=$RUNNER_TEMP/portamento" >> "$GITHUB_ENV"
+          echo "DIST=$RUNNER_TEMP/dist" >> "$GITHUB_ENV"
+          # Wine's build runs the x86_64 tools it builds
+          /usr/bin/pgrep -q oahd || sudo softwareupdate --install-rosetta --agree-to-license
+          brew install ${{ matrix.brew }}
+          # name and version come from porta, so the two can't disagree
+          read -r NAME VERSION < <(python3 -c '
+          import runpy, sys
+          prebuilt = runpy.run_path("porta")["PREBUILT"]
+          print(*next((n, v or "") for n, (script, v) in prebuilt.items() if script == sys.argv[1]))
+          ' "${{ matrix.script }}")
+          echo "NAME=$NAME" >> "$GITHUB_ENV"
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          echo "building $NAME $VERSION"
+
+      - name: Fetch Gcenx wine-staging (libraries the CrossOver Wine links against)
+        if: matrix.needs-staging
+        run: |
+          deps=$(python3 -c '
+          import runpy
+          porta = runpy.run_path("porta")
+          porta["fetch"]("wine")
+          print(porta["WINE_APP"] / "lib")
+          ')
+          echo "PORTA_DEPS=$deps" >> "$GITHUB_ENV"
+
+      - name: Build
+        run: |
+          mkdir -p "$DIST"
+          if [ "${{ matrix.script }}" = tests/build.sh ]; then
+              tests/build.sh "$PORTA_HOME/runtimes/$NAME"
+          else
+              PORTA_SOURCE_OUT="$DIST/$NAME-source.tar.xz" "${{ matrix.script }}" "$VERSION"
+          fi
+
+      - name: Package
+        run: scripts/package-runtime.sh "$PORTA_HOME/runtimes/$NAME" "$DIST"
+
+      - name: Keep build logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: logs-${{ strategy.job-index }}
+          path: |
+            build/**/*.log
+          if-no-files-found: ignore
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: runtime-${{ strategy.job-index }}
+          path: ${{ env.DIST }}/*.tar.xz
+          if-no-files-found: error
+          compression-level: 0  # already xz
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: runtime-*
+          path: dist
+          merge-multiple: true
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          cd dist
+          sha256sum *.tar.xz > SHA256SUMS
+          cat SHA256SUMS
+          cat > notes.md <<EOF
+          Runtimes for \`porta setup\`, built from source by the Runtimes workflow at ${GITHUB_SHA::7}.
+          To use them, set \`RUNTIME_RELEASE = "$TAG"\` in \`porta\`.
+
+          | Archive | What | License |
+          |---|---|---|
+          | \`wine-mods-*\` | Wine Staging modules with Portamento's patches (winemac.so, kernelbase.dll, ntdll.dll), laid over Gcenx's wine-staging | LGPL-2.1-or-later |
+          | \`wine-cx-*\` | Wine from CodeWeavers' CrossOver source release, x86_64, with the Steam web UI patch | LGPL-2.1-or-later |
+          | \`kosmickrisp-*\` | Mesa's KosmicKrisp Vulkan driver for x86_64, with the fillModeNonSolid patch | MIT |
+          | \`selftests\` | The Windows smoke tests \`porta selftest\` runs | MIT |
+
+          Each \`*-source.tar.xz\` is the exact, patched source tree its archive was built from.
+          The CrossOver Wine is linked against the x86_64 libraries in Gcenx's wine-staging build;
+          they are not included here, \`porta setup\` takes them from that build.
+          EOF
+          gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
+              --title "$TAG" --notes-file notes.md ./*.tar.xz SHA256SUMS

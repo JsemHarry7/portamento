@@ -1,0 +1,16 @@
+# builds and source trees (scripts/*.sh, scripts/build-app.sh)
+/build/
+/app/.build/
+/app/.swiftpm/
+
+# tests/build.sh output; d3d11test_shaders.h is generated but checked in
+/tests/*.exe
+/tests/wincap
+
+# caches the smoke tests and Python leave behind
+*.dxvk-cache
+__pycache__/
+*.pyc
+
+.DS_Store
+/.claude/

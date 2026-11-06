@@ -1,0 +1,539 @@
+diff -ruN a/dlls/winemac.drv/Makefile.in b/dlls/winemac.drv/Makefile.in
+--- a/dlls/winemac.drv/Makefile.in	2026-10-30 21:52:31
++++ b/dlls/winemac.drv/Makefile.in	2026-11-06 15:15:47
+@@ -28,6 +28,7 @@
+ 	cocoa_window.m \
+ 	display.c \
+ 	dllmain.c \
++	metal_compat.c \
+ 	event.c \
+ 	gdi.c \
+ 	image.c \
+diff -ruN a/dlls/winemac.drv/macdrv.h b/dlls/winemac.drv/macdrv.h
+--- a/dlls/winemac.drv/macdrv.h	2026-11-06 15:15:47
++++ b/dlls/winemac.drv/macdrv.h	2026-11-06 15:15:47
+@@ -257,6 +257,7 @@
+ 
+ extern struct macdrv_win_data *get_win_data(HWND hwnd);
+ extern void release_win_data(struct macdrv_win_data *data);
++extern void metal_compat_update_surfaces(HWND hwnd);
+ extern void init_win_context(void);
+ extern WineWindow *macdrv_get_cocoa_window(HWND hwnd, bool require_on_screen);
+ extern RGNDATA *get_region_data(HRGN hrgn, HDC hdc_lptodp);
+diff -ruN a/dlls/winemac.drv/metal_compat.c b/dlls/winemac.drv/metal_compat.c
+--- a/dlls/winemac.drv/metal_compat.c	1970-01-01 01:00:00
++++ b/dlls/winemac.drv/metal_compat.c	2026-11-06 15:15:47
+@@ -0,0 +1,502 @@
++/*
++ * MACDRV compatibility exports for Metal translation layers (DXMT, D3DMetal)
++ *
++ * This library is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU Lesser General Public
++ * License as published by the Free Software Foundation; either
++ * version 2.1 of the License, or (at your option) any later version.
++ *
++ * This library is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * Lesser General Public License for more details.
++ *
++ * You should have received a copy of the GNU Lesser General Public
++ * License along with this library; if not, write to the Free Software
++ * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
++ */
++
++#if 0
++#pragma makedep unix
++#endif
++
++#include "config.h"
++#include <dispatch/dispatch.h>
++#include "ntstatus.h"
++#include "macdrv.h"
++#include "wine/list.h"
++
++WINE_DEFAULT_DEBUG_CHANNEL(macdrv);
++
++extern void OnMainThread(dispatch_block_t block);
++
++/* DXMT and D3DMetal find the macdrv_functions table with dlsym() and
++ * dereference the window data it returns.  Both expect the interface of
++ * CrossOver's winemac.drv, where every window has a client view and struct
++ * macdrv_win_data uses an older layout; upstream only has a client_view while
++ * a GL/Vulkan client surface exists.  So hand out a copy with the layout they
++ * expect, creating a client surface for the window when it has none. */
++struct metal_win_data
++{
++    HWND                hwnd;
++    WineWindow         *cocoa_window;
++    WineContentView    *cocoa_view;
++    WineContentView    *client_cocoa_view;
++    RECT                window_rect;
++    RECT                whole_rect;
++    RECT                client_rect;
++    int                 pixel_format;
++    COLORREF            color_key;
++    HANDLE              drag_event;
++    unsigned int        on_screen : 1;
++    unsigned int        shaped : 1;
++    unsigned int        layered : 1;
++    unsigned int        ulw_layered : 1;
++    unsigned int        per_pixel_alpha : 1;
++    unsigned int        minimized : 1;
++    void               *padding[2];     /* padding[0] holds our macdrv_win_data */
++};
++
++C_ASSERT(sizeof(struct metal_win_data) == 120);
++
++/* win32u only keeps the client surfaces it created itself in sync with their
++ * window, so track ours here until the metal view is released. */
++struct metal_surface
++{
++    struct list            entry;
++    struct client_surface *client;
++    WineContentView       *view;
++    WineMetalView         *metal_view;
++};
++
++static struct list metal_surfaces = LIST_INIT(metal_surfaces);
++static pthread_mutex_t metal_surfaces_lock = PTHREAD_MUTEX_INITIALIZER;
++
++static void create_client_surface(HWND hwnd)
++{
++    struct macdrv_win_data *data;
++    struct metal_surface *surface;
++    struct client_surface *client;
++    BOOL has_view;
++
++    if (!(data = get_win_data(hwnd))) return;
++    has_view = data->client_view != NULL;
++    release_win_data(data);
++    if (has_view) return;
++
++    /* creating and presenting the surface makes its view the window's client_view */
++    if (!(client = macdrv_CreateClientSurface(hwnd, 0, FALSE))) return;
++    if (!(surface = calloc(1, sizeof(*surface))))
++    {
++        client_surface_release(client);
++        return;
++    }
++    surface->client = client;
++    surface->view = impl_from_client_surface(client)->cocoa_view;
++
++    TRACE("created client surface %s\n", debugstr_client_surface(client));
++    pthread_mutex_lock(&metal_surfaces_lock);
++    list_add_tail(&metal_surfaces, &surface->entry);
++    pthread_mutex_unlock(&metal_surfaces_lock);
++}
++
++static struct metal_win_data *compat_get_win_data(HWND hwnd)
++{
++    TRACE("compat_get_win_data\n");
++    struct macdrv_win_data *data;
++    struct metal_win_data *ret;
++
++    /* the client surface must exist before taking the win_data lock */
++    create_client_surface(hwnd);
++    if (!(data = get_win_data(hwnd))) return NULL;
++    if (!(ret = calloc(1, sizeof(*ret))))
++    {
++        release_win_data(data);
++        return NULL;
++    }
++    ret->hwnd = data->hwnd;
++    ret->cocoa_window = data->cocoa_window;
++    ret->cocoa_view = data->client_view;
++    ret->client_cocoa_view = data->client_view;
++    ret->window_rect = data->rects.window;
++    ret->whole_rect = data->rects.visible;
++    ret->client_rect = data->rects.client;
++    ret->color_key = CLR_INVALID;
++    ret->drag_event = data->drag_event;
++    ret->on_screen = data->on_screen;
++    ret->shaped = data->shaped;
++    ret->layered = data->layered;
++    ret->ulw_layered = data->ulw_layered;
++    ret->per_pixel_alpha = data->per_pixel_alpha;
++    ret->minimized = data->minimized;
++    ret->padding[0] = data;
++    return ret;
++}
++
++static void compat_release_win_data(struct metal_win_data *ret)
++{
++    TRACE("compat_release_win_data\n");
++    if (!ret) return;
++    release_win_data(ret->padding[0]);
++    free(ret);
++}
++
++static void compat_init_display_devices(BOOL force)
++{
++    TRACE("compat_init_display_devices\n");
++    TRACE("%d, nothing to do\n", force);
++}
++
++static WineWindow *compat_get_cocoa_window(HWND hwnd, BOOL require_on_screen)
++{
++    TRACE("compat_get_cocoa_window\n");
++    return macdrv_get_cocoa_window(hwnd, require_on_screen);
++}
++
++static WineMetalView *compat_view_create_metal_view(WineContentView *view, MTLDevice_id device)
++{
++    TRACE("compat_view_create_metal_view\n");
++    WineMetalView *metal_view = macdrv_view_create_metal_view(view, device);
++    struct metal_surface *surface;
++
++    pthread_mutex_lock(&metal_surfaces_lock);
++    LIST_FOR_EACH_ENTRY(surface, &metal_surfaces, struct metal_surface, entry)
++    {
++        if (surface->view != view || surface->metal_view) continue;
++        surface->metal_view = metal_view;
++        break;
++    }
++    pthread_mutex_unlock(&metal_surfaces_lock);
++    return metal_view;
++}
++
++static void compat_view_release_metal_view(WineMetalView *metal_view)
++{
++    TRACE("compat_view_release_metal_view\n");
++    struct metal_surface *surface, *found = NULL;
++
++    macdrv_view_release_metal_view(metal_view);
++
++    pthread_mutex_lock(&metal_surfaces_lock);
++    LIST_FOR_EACH_ENTRY(surface, &metal_surfaces, struct metal_surface, entry)
++    {
++        if (surface->metal_view != metal_view) continue;
++        list_remove(&surface->entry);
++        found = surface;
++        break;
++    }
++    pthread_mutex_unlock(&metal_surfaces_lock);
++
++    if (!found) return;
++    TRACE("releasing client surface %s\n", debugstr_client_surface(found->client));
++    client_surface_release(found->client);
++    free(found);
++}
++
++static void compat_on_main_thread(dispatch_block_t block)
++{
++    TRACE("compat_on_main_thread\n");
++    OnMainThread(block);
++}
++
++/* Registry, in the ANSI flavour the translation layers call, implemented with
++ * the NT API the rest of the driver uses. */
++static HKEY get_root_key(HKEY hkey)
++{
++    static const WCHAR machineW[] = {'\\','R','e','g','i','s','t','r','y','\\','M','a','c','h','i','n','e'};
++    static HKEY hkcu, hklm;
++
++    if (hkey == HKEY_CURRENT_USER)
++    {
++        if (!hkcu) hkcu = open_hkcu_key("");
++        return hkcu;
++    }
++    if (hkey == HKEY_LOCAL_MACHINE)
++    {
++        if (!hklm) hklm = reg_open_key(NULL, machineW, sizeof(machineW));
++        return hklm;
++    }
++    if ((ULONG_PTR)hkey >= 0x80000000) return NULL;
++    return hkey;
++}
++
++static ULONG name_to_unicode(WCHAR *dst, ULONG size, const char *name)
++{
++    ULONG len = 0;
++
++    if (name && name[0] && RtlUTF8ToUnicodeN(dst, size, &len, name, strlen(name))) return ~0u;
++    return len;
++}
++
++static BOOL is_string_type(DWORD type)
++{
++    return type == REG_SZ || type == REG_EXPAND_SZ || type == REG_MULTI_SZ;
++}
++
++static LSTATUS WINAPI compat_RegOpenKeyExA(HKEY hkey, LPCSTR name, DWORD options, DWORD access, HKEY *ret)
++{
++    TRACE("compat_RegOpenKeyExA\n");
++    WCHAR nameW[MAX_PATH];
++    ULONG len;
++    HKEY root;
++
++    TRACE("%p %s\n", hkey, debugstr_a(name));
++    if (!ret) return ERROR_INVALID_PARAMETER;
++    if (!(root = get_root_key(hkey))) return ERROR_INVALID_HANDLE;
++    if ((len = name_to_unicode(nameW, sizeof(nameW), name)) == ~0u) return ERROR_INVALID_PARAMETER;
++    if (!(*ret = reg_open_key(root, nameW, len))) return ERROR_FILE_NOT_FOUND;
++    return ERROR_SUCCESS;
++}
++
++static LSTATUS WINAPI compat_RegCreateKeyExA(HKEY hkey, LPCSTR name, DWORD reserved, LPSTR class,
++                                             DWORD options, DWORD access, LPSECURITY_ATTRIBUTES sa,
++                                             HKEY *ret, LPDWORD disposition)
++{
++    TRACE("compat_RegCreateKeyExA\n");
++    WCHAR nameW[MAX_PATH];
++    ULONG len;
++    HKEY root;
++
++    TRACE("%p %s\n", hkey, debugstr_a(name));
++    if (!ret) return ERROR_INVALID_PARAMETER;
++    if (!(root = get_root_key(hkey))) return ERROR_INVALID_HANDLE;
++    if ((len = name_to_unicode(nameW, sizeof(nameW), name)) == ~0u) return ERROR_INVALID_PARAMETER;
++    if (!(*ret = reg_create_key(root, nameW, len, options, disposition))) return ERROR_ACCESS_DENIED;
++    return ERROR_SUCCESS;
++}
++
++static LSTATUS WINAPI compat_RegQueryValueExA(HKEY hkey, LPCSTR name, LPDWORD reserved, LPDWORD type,
++                                              BYTE *data, LPDWORD count)
++{
++    TRACE("compat_RegQueryValueExA\n");
++    char buffer[offsetof(KEY_VALUE_PARTIAL_INFORMATION, Data[512])];
++    KEY_VALUE_PARTIAL_INFORMATION *info = (void *)buffer;
++    WCHAR nameW[MAX_PATH];
++    UNICODE_STRING nameU;
++    LSTATUS ret = ERROR_SUCCESS;
++    ULONG len, size;
++    NTSTATUS status;
++    HKEY key;
++
++    TRACE("%p %s\n", hkey, debugstr_a(name));
++    if (data && !count) return ERROR_INVALID_PARAMETER;
++    if (!(key = get_root_key(hkey))) return ERROR_INVALID_HANDLE;
++    if ((len = name_to_unicode(nameW, sizeof(nameW), name)) == ~0u) return ERROR_INVALID_PARAMETER;
++    nameU.Buffer = nameW;
++    nameU.Length = nameU.MaximumLength = len;
++
++    status = NtQueryValueKey(key, &nameU, KeyValuePartialInformation, info, sizeof(buffer), &len);
++    if (status == STATUS_BUFFER_OVERFLOW)
++    {
++        if (!(info = malloc(len))) return ERROR_OUTOFMEMORY;
++        status = NtQueryValueKey(key, &nameU, KeyValuePartialInformation, info, len, &len);
++    }
++    if (status)
++    {
++        ret = status == STATUS_OBJECT_NAME_NOT_FOUND ? ERROR_FILE_NOT_FOUND : RtlNtStatusToDosError(status);
++        goto done;
++    }
++
++    if (type) *type = info->Type;
++    size = info->DataLength;
++    if (is_string_type(info->Type))
++        RtlUnicodeToUTF8N(NULL, 0, &size, (WCHAR *)info->Data, info->DataLength);
++    if (data)
++    {
++        if (*count < size) ret = ERROR_MORE_DATA;
++        else if (is_string_type(info->Type))
++            RtlUnicodeToUTF8N((char *)data, *count, &size, (WCHAR *)info->Data, info->DataLength);
++        else
++            memcpy(data, info->Data, size);
++    }
++    if (count) *count = size;
++
++done:
++    if (info != (void *)buffer) free(info);
++    return ret;
++}
++
++static LSTATUS WINAPI compat_RegSetValueExA(HKEY hkey, LPCSTR name, DWORD reserved, DWORD type,
++                                            const BYTE *data, DWORD count)
++{
++    TRACE("compat_RegSetValueExA\n");
++    WCHAR nameW[MAX_PATH], *dataW = NULL;
++    UNICODE_STRING nameU;
++    NTSTATUS status;
++    ULONG len;
++    HKEY key;
++
++    TRACE("%p %s type %lu\n", hkey, debugstr_a(name), type);
++    if (!(key = get_root_key(hkey))) return ERROR_INVALID_HANDLE;
++    if ((len = name_to_unicode(nameW, sizeof(nameW), name)) == ~0u) return ERROR_INVALID_PARAMETER;
++    nameU.Buffer = nameW;
++    nameU.Length = nameU.MaximumLength = len;
++
++    if (is_string_type(type) && data)
++    {
++        RtlUTF8ToUnicodeN(NULL, 0, &len, (const char *)data, count);
++        if (!(dataW = malloc(len))) return ERROR_OUTOFMEMORY;
++        RtlUTF8ToUnicodeN(dataW, len, &len, (const char *)data, count);
++        status = NtSetValueKey(key, &nameU, 0, type, dataW, len);
++        free(dataW);
++    }
++    else status = NtSetValueKey(key, &nameU, 0, type, data, count);
++    return RtlNtStatusToDosError(status);
++}
++
++static LSTATUS WINAPI compat_RegCloseKey(HKEY hkey)
++{
++    TRACE("compat_RegCloseKey\n");
++    if (!hkey) return ERROR_INVALID_HANDLE;
++    if ((ULONG_PTR)hkey >= 0x80000000) return ERROR_SUCCESS;
++    return RtlNtStatusToDosError(NtClose(hkey));
++}
++
++/* user32, on top of win32u */
++static BOOL WINAPI compat_EnumDisplayMonitors(HDC hdc, LPRECT rect, MONITORENUMPROC proc, LPARAM lp)
++{
++    TRACE("compat_EnumDisplayMonitors\n");
++    return NtUserEnumDisplayMonitors(hdc, rect, proc, lp);
++}
++
++static BOOL WINAPI compat_GetMonitorInfoA(HMONITOR monitor, LPMONITORINFO info)
++{
++    TRACE("compat_GetMonitorInfoA\n");
++    MONITORINFOEXA *infoA = (MONITORINFOEXA *)info;
++    MONITORINFOEXW infoW;
++    ULONG len;
++
++    if (info->cbSize == sizeof(MONITORINFO)) return NtUserGetMonitorInfo(monitor, info);
++    if (info->cbSize != sizeof(MONITORINFOEXA)) return FALSE;
++
++    infoW.cbSize = sizeof(infoW);
++    if (!NtUserGetMonitorInfo(monitor, (MONITORINFO *)&infoW)) return FALSE;
++    infoA->rcMonitor = infoW.rcMonitor;
++    infoA->rcWork = infoW.rcWork;
++    infoA->dwFlags = infoW.dwFlags;
++    RtlUnicodeToUTF8N(infoA->szDevice, sizeof(infoA->szDevice) - 1, &len,
++                      infoW.szDevice, (wcslen(infoW.szDevice) + 1) * sizeof(WCHAR));
++    infoA->szDevice[sizeof(infoA->szDevice) - 1] = 0;
++    return TRUE;
++}
++
++static BOOL WINAPI compat_AdjustWindowRectEx(LPRECT rect, DWORD style, BOOL menu, DWORD ex_style)
++{
++    TRACE("compat_AdjustWindowRectEx\n");
++    return NtUserAdjustWindowRect(rect, style, menu, ex_style, NtUserGetSystemDpiForProcess(NULL));
++}
++
++static LONG_PTR WINAPI compat_GetWindowLongPtrW(HWND hwnd, int offset)
++{
++    TRACE("compat_GetWindowLongPtrW\n");
++    return NtUserGetWindowLongPtrW(hwnd, offset);
++}
++
++static BOOL WINAPI compat_GetWindowRect(HWND hwnd, LPRECT rect)
++{
++    TRACE("compat_GetWindowRect\n");
++    return NtUserGetWindowRect(hwnd, rect, NtUserGetWinMonitorDpi(hwnd, MDT_DEFAULT));
++}
++
++static BOOL WINAPI compat_MoveWindow(HWND hwnd, int x, int y, int cx, int cy, BOOL repaint)
++{
++    TRACE("compat_MoveWindow\n");
++    return NtUserMoveWindow(hwnd, x, y, cx, cy, repaint);
++}
++
++static BOOL WINAPI compat_SetWindowPos(HWND hwnd, HWND after, int x, int y, int cx, int cy, UINT flags)
++{
++    TRACE("compat_SetWindowPos\n");
++    return NtUserSetWindowPos(hwnd, after, x, y, cx, cy, flags);
++}
++
++static INT WINAPI compat_GetSystemMetrics(INT index)
++{
++    TRACE("compat_GetSystemMetrics\n");
++    return NtUserGetSystemMetrics(index);
++}
++
++static LONG_PTR WINAPI compat_SetWindowLongPtrW(HWND hwnd, INT offset, LONG_PTR value)
++{
++    TRACE("compat_SetWindowLongPtrW\n");
++    return NtUserSetWindowLongPtr(hwnd, offset, value, FALSE);
++}
++
++/***********************************************************************
++ *              metal_compat_update_surfaces
++ *
++ * Keep the client surfaces created for the translation layers matched to
++ * their window.  Must not be called with the win_data lock held.
++ */
++void metal_compat_update_surfaces(HWND hwnd)
++{
++    struct metal_surface *surface;
++
++    pthread_mutex_lock(&metal_surfaces_lock);
++    LIST_FOR_EACH_ENTRY(surface, &metal_surfaces, struct metal_surface, entry)
++    {
++        /* presenting refreshes the surface rects and frame first */
++        if (surface->client->hwnd == hwnd || surface->client->toplevel == hwnd)
++            client_surface_present(surface->client);
++    }
++    pthread_mutex_unlock(&metal_surfaces_lock);
++}
++
++/* The layout DXMT and D3DMetal expect; DXMT only uses the first ten. */
++struct macdrv_functions
++{
++    void (*macdrv_init_display_devices)(BOOL);
++    struct metal_win_data *(*get_win_data)(HWND);
++    void (*release_win_data)(struct metal_win_data *);
++    WineWindow *(*macdrv_get_cocoa_window)(HWND, BOOL);
++    MTLDevice_id (*macdrv_create_metal_device)(void);
++    void (*macdrv_release_metal_device)(MTLDevice_id);
++    WineMetalView *(*macdrv_view_create_metal_view)(WineContentView *, MTLDevice_id);
++    CAMetalLayer *(*macdrv_view_get_metal_layer)(WineMetalView *);
++    void (*macdrv_view_release_metal_view)(WineMetalView *);
++    void (*on_main_thread)(dispatch_block_t);
++    LSTATUS (WINAPI *RegQueryValueExA)(HKEY, LPCSTR, LPDWORD, LPDWORD, BYTE *, LPDWORD);
++    LSTATUS (WINAPI *RegSetValueExA)(HKEY, LPCSTR, DWORD, DWORD, const BYTE *, DWORD);
++    LSTATUS (WINAPI *RegOpenKeyExA)(HKEY, LPCSTR, DWORD, DWORD, HKEY *);
++    LSTATUS (WINAPI *RegCreateKeyExA)(HKEY, LPCSTR, DWORD, LPSTR, DWORD, DWORD, LPSECURITY_ATTRIBUTES, HKEY *, LPDWORD);
++    LSTATUS (WINAPI *RegCloseKey)(HKEY);
++    BOOL (WINAPI *EnumDisplayMonitors)(HDC, LPRECT, MONITORENUMPROC, LPARAM);
++    BOOL (WINAPI *GetMonitorInfoA)(HMONITOR, LPMONITORINFO);
++    BOOL (WINAPI *AdjustWindowRectEx)(LPRECT, DWORD, BOOL, DWORD);
++    LONG_PTR (WINAPI *GetWindowLongPtrW)(HWND, int);
++    BOOL (WINAPI *GetWindowRect)(HWND, LPRECT);
++    BOOL (WINAPI *MoveWindow)(HWND, int, int, int, int, BOOL);
++    BOOL (WINAPI *SetWindowPos)(HWND, HWND, int, int, int, int, UINT);
++    INT (WINAPI *GetSystemMetrics)(INT);
++    LONG_PTR (WINAPI *SetWindowLongPtrW)(HWND, INT, LONG_PTR);
++};
++
++C_ASSERT(sizeof(struct macdrv_functions) == 192);
++
++__attribute__((visibility("default"))) const struct macdrv_functions macdrv_functions =
++{
++    compat_init_display_devices,
++    compat_get_win_data,
++    compat_release_win_data,
++    compat_get_cocoa_window,
++    macdrv_create_metal_device,
++    macdrv_release_metal_device,
++    compat_view_create_metal_view,
++    macdrv_view_get_metal_layer,
++    compat_view_release_metal_view,
++    compat_on_main_thread,
++    compat_RegQueryValueExA,
++    compat_RegSetValueExA,
++    compat_RegOpenKeyExA,
++    compat_RegCreateKeyExA,
++    compat_RegCloseKey,
++    compat_EnumDisplayMonitors,
++    compat_GetMonitorInfoA,
++    compat_AdjustWindowRectEx,
++    compat_GetWindowLongPtrW,
++    compat_GetWindowRect,
++    compat_MoveWindow,
++    compat_SetWindowPos,
++    compat_GetSystemMetrics,
++    compat_SetWindowLongPtrW,
++};
+diff -ruN a/dlls/winemac.drv/window.c b/dlls/winemac.drv/window.c
+--- a/dlls/winemac.drv/window.c	2026-10-30 21:52:31
++++ b/dlls/winemac.drv/window.c	2026-11-06 15:15:47
+@@ -1690,6 +1690,7 @@
+ 
+ done:
+     release_win_data(data);
++    metal_compat_update_surfaces(hwnd);
+ }
+ 
+ 

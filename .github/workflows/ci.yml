@@ -1,0 +1,40 @@
+# Quick checks for every push: the app builds, porta and the scripts parse,
+# and the smoke tests compile. Building the runtimes is the Runtimes workflow.
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  app:
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v4
+      - run: scripts/build-app.sh
+      - run: ditto -c -k --keepParent build/Portamento.app build/Portamento.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Portamento-app
+          path: build/Portamento.zip
+
+  porta:
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v4
+      - name: porta runs
+        env:
+          PORTA_HOME: ${{ runner.temp }}/portamento
+        run: |
+          ./porta --help
+          ./porta list
+          ./porta list --json | python3 -m json.tool > /dev/null
+      - name: scripts parse
+        run: for f in scripts/*.sh tests/build.sh; do bash -n "$f"; done
+
+  selftests:
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v4
+      - run: brew install mingw-w64 vulkan-headers
+      - run: tests/build.sh
