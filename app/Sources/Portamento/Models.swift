@@ -7,14 +7,20 @@ struct Inventory: Decodable {
     var backends: [String: Bool]
     var vulkan: [String: Bool]
     var defaults: Defaults
+    var setup: Setup
 
     struct Defaults: Decodable {
         var wine: String
         var gfx: String
     }
 
+    /// What `porta setup` still has to download or build.
+    struct Setup: Decodable {
+        var missing: [String]
+    }
+
     static let empty = Inventory(prefixes: [], wines: [:], backends: [:], vulkan: [:],
-                                 defaults: .init(wine: "cx", gfx: "dxmt"))
+                                 defaults: .init(wine: "cx", gfx: "dxmt"), setup: .init(missing: []))
 }
 
 struct Prefix: Decodable, Identifiable, Hashable {
@@ -41,6 +47,8 @@ struct Program: Decodable, Identifiable, Hashable {
     var appid: String?
     var art: String?
     var folder: String?
+    /// Where `porta run` writes the program's output.
+    var log: String?
 
     enum Kind: String, Decodable {
         case `default`, steam, custom
@@ -113,6 +121,17 @@ struct WineProcess: Equatable {
         guard command.range(of: #"^"?[a-z]:\\"#, options: .regularExpression) != nil else { return nil }
         self.pid = pid
         self.command = command
+    }
+}
+
+/// What `porta install --json` added to a prefix.
+struct InstallReport: Decodable {
+    var added: [Added]
+    var exit: Int32
+
+    struct Added: Decodable, Hashable {
+        var name: String
+        var exe: String
     }
 }
 

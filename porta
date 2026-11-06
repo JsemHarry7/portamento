@@ -98,6 +98,10 @@ PREFIX_DLLS = {"dxmt": ["winemetal.dll"]}
 ARCHS = ("x86_64-windows", "i386-windows", "x86_64-unix")
 
 STEAM_EXE = r"C:\Program Files (x86)\Steam\steam.exe"
+STEAM_SETUP = "https://cdn.akamai.steamstatic.com/client/installer/SteamSetup.exe"
+# Steam's web UI draws through a GPU process Wine's Mac driver can't show; with the
+# kernelbase patch it renders in-process, and without the GPU it doesn't flicker
+STEAM_ARGS = ["-cef-disable-gpu"]
 
 
 def die(msg):
@@ -161,7 +165,10 @@ def build_from_source(name):
     script, version = PREBUILT[name]
     print(f"building {name} from source, this takes a while")
     out = [RUNTIMES / name] if name == "selftests" else [version]
-    subprocess.run([ROOT / script, *out], check=True, env=dict(os.environ, PORTA_HOME=str(HOME)))
+    env = dict(os.environ, PORTA_HOME=str(HOME))
+    if ".app/" in str(ROOT):  # the copy inside Portamento.app: keep build trees out of the bundle
+        env["PORTA_BUILD"] = str(HOME / "build")
+    subprocess.run([ROOT / script, *out], check=True, env=env)
 
 
 def link_cx_libraries():
@@ -179,6 +186,16 @@ def link_cx_libraries():
             dst.symlink_to(os.readlink(lib))
         else:
             subprocess.run(["cp", "-c", lib, dst], check=True)
+
+
+def setup_missing():
+    """What `porta setup` still has to fetch or build."""
+    missing = [a for a in ARCHIVES if not overlay_dir(a).exists()]
+    if not (RUNTIMES / BASE).exists():
+        missing.append(BASE)
+    missing += [n for n in PREBUILT if not (RUNTIMES / n).exists()
+                and not (n == "selftests" and (ROOT / "tests/d3d11test.exe").exists())]
+    return missing
 
 
 def selftest_exe(name):
@@ -306,6 +323,13 @@ def cmd_setup(args):
     print(f"ready: {HOME}")
 
 
+def server_running(name):
+    """Whether anything runs in the prefix: its wineserver keeps a socket in
+    /tmp/.wine-<uid>/server-<device>-<inode of the prefix>/ while it's up."""
+    st = prefix_dir(name).stat()
+    return (Path(f"/tmp/.wine-{os.getuid()}") / f"server-{st.st_dev:x}-{st.st_ino:x}" / "socket").exists()
+
+
 def cmd_create(args):
     pfx = prefix_dir(args.name)
     if (pfx / "porta.json").exists():
@@ -360,17 +384,23 @@ def programs(name, cfg):
     return found + list(games.values())
 
 
+def log_path(name, exe):
+    return LOGS / f"{name}-{ntpath.basename(exe).lower().removesuffix('.exe')}.log"
+
+
 def cmd_list(args):
     prefixes = [(cfg.parent.name, json.loads(cfg.read_text())) for cfg in sorted(PREFIXES.glob("*/porta.json"))]
     if args.json:
         print(json.dumps({
             "prefixes": [{"name": n, "wine": prefix_wine(c), "gfx": c["gfx"], "vulkan": c.get("vulkan", "moltenvk"),
                           "args": c.get("args", []), "env": c.get("env", {}), "path": str(prefix_dir(n)),
-                          "programs": programs(n, c)} for n, c in prefixes],
+                          "programs": [dict(p, log=str(log_path(n, p["exe"]))) for p in programs(n, c)]}
+                         for n, c in prefixes],
             "wines": {w: wine_bin(p).exists() for w, p in WINES.items()},
             "backends": {g: not combo_error(DEFAULT_WINE, g) for g in BACKENDS},
             "vulkan": {v: icd is None or icd.exists() for v, icd in VULKAN_DRIVERS.items()},
             "defaults": {"wine": DEFAULT_WINE, "gfx": DEFAULT_GFX},
+            "setup": {"missing": setup_missing()},
         }, indent=2))
         return
     for n, c in prefixes:
@@ -434,10 +464,142 @@ def cmd_run(args):
     if args.fg:
         os.execve(cmd[0], cmd, env)
     LOGS.mkdir(parents=True, exist_ok=True)
-    log = LOGS / f"{args.name}-{ntpath.basename(exe).lower().removesuffix('.exe')}.log"
+    log = log_path(args.name, exe)
     with open(log, "w") as out:
         subprocess.Popen(cmd, env=env, stdout=out, stderr=subprocess.STDOUT, start_new_session=True)
     print(f"started {exe} with {gfx}, log: {log}")
+
+
+def utf16z(buf, off):
+    end = off
+    while end + 1 < len(buf) and buf[end:end + 2] != b"\0\0":
+        end += 2
+    return buf[off:end].decode("utf-16-le", errors="replace")
+
+
+def read_shortcut(path):
+    """(target, arguments) of a Windows shortcut, from the parts of the Shell Link
+    format Wine writes: the LinkInfo's local path and the string data."""
+    data = path.read_bytes()
+    if len(data) < 0x4C or data[:4] != b"L\0\0\0":
+        return None
+    u32 = lambda buf, off: int.from_bytes(buf[off:off + 4], "little")
+    flags, pos, target = u32(data, 0x14), 0x4C, None
+    if flags & 0x1:  # HasLinkTargetIDList
+        pos += 2 + int.from_bytes(data[pos:pos + 2], "little")
+    if flags & 0x2:  # HasLinkInfo
+        info = data[pos:pos + u32(data, pos)]
+        if u32(info, 8) & 0x1:  # VolumeIDAndLocalBasePath
+            if u32(info, 4) >= 0x24:  # header with the Unicode offsets
+                target = utf16z(info, u32(info, 0x1C)) + utf16z(info, u32(info, 0x20))
+            else:
+                ansi = lambda off: info[off:info.index(b"\0", off)].decode("cp1252", errors="replace")
+                target = ansi(u32(info, 0x10)) + ansi(u32(info, 0x18))
+        pos += len(info)
+    strings = {}
+    unicode = flags & 0x80
+    for bit in (0x4, 0x8, 0x10, 0x20, 0x40):  # name, relative path, working dir, arguments, icon
+        if flags & bit:
+            count = int.from_bytes(data[pos:pos + 2], "little")
+            size = count * 2 if unicode else count
+            text = data[pos + 2:pos + 2 + size].decode("utf-16-le" if unicode else "cp1252", errors="replace")
+            strings[bit] = text.rstrip("\0")  # Wine counts the terminator
+            pos += 2 + size
+    return (target, strings.get(0x20, "")) if target else None
+
+
+def split_windows_args(line):
+    """Arguments from a Windows command line: spaces separate, double quotes group."""
+    return [m.group(1) if m.group(1) is not None else m.group(2) for m in re.finditer(r'"([^"]*)"|(\S+)', line)]
+
+
+# shortcuts that come with a program but aren't how you'd start it
+NOT_A_PROGRAM = re.compile(r"unins|uninstall|deinstall|readme|read me|manual|help|license|website|web site|"
+                           r"support|register|update|changelog|release notes", re.I)
+
+
+def new_shortcuts(name, since):
+    """Shortcuts an installer created in the prefix's Start menus and desktops since `since`."""
+    c = prefix_dir(name) / "drive_c"
+    found = []
+    menus = [c / "ProgramData/Microsoft/Windows/Start Menu"]
+    desktops = [c / "users/Public/Desktop"]
+    for user in (c / "users").iterdir() if (c / "users").exists() else []:
+        menus.append(user / "AppData/Roaming/Microsoft/Windows/Start Menu")
+        desktops.append(user / "Desktop")  # may be the Mac's own desktop: not searched recursively
+    links = [l for d in menus if d.is_dir() for l in d.rglob("*.lnk")]
+    links += [l for d in desktops if d.is_dir() for l in d.glob("*.lnk")]
+    for link in sorted(links, key=lambda l: len(l.parts)):
+        if link.stat().st_mtime < since or NOT_A_PROGRAM.search(link.stem):
+            continue
+        shortcut = read_shortcut(link)
+        if not shortcut or not shortcut[0].lower().endswith(".exe") or NOT_A_PROGRAM.search(ntpath.basename(shortcut[0])):
+            continue
+        if any(p["exe"].lower() == shortcut[0].lower() for p in found):
+            continue  # same program in the Start menu and on the desktop
+        found.append({"name": link.stem, "exe": shortcut[0], "args": split_windows_args(shortcut[1])})
+    return found
+
+
+def cmd_install(args):
+    cfg = load(args.name)
+    rt = runtime(prefix_wine(cfg), cfg["gfx"])
+    env = wine_env(args.name, cfg)
+    # with nothing else running, wait for everything the installer started; else only for it
+    wait_all = not server_running(args.name)
+    LOGS.mkdir(parents=True, exist_ok=True)
+    log = LOGS / f"{args.name}-install.log"
+    start = time.time() - 2  # file times are whole seconds on some volumes
+    report = {"added": [], "exit": 0}
+
+    if args.what.lower() == "steam":
+        setup = download(STEAM_SETUP)
+        print("installing Steam")
+        with open(log, "w") as out:
+            report["exit"] = subprocess.run([wine_bin(rt), setup, "/S"], env=env, stdout=out, stderr=out).returncode
+            if wait_all:
+                subprocess.run([rt / "bin/wineserver", "-w"], env=env)
+        if not (prefix_dir(args.name) / STEAM_DIR / "steam.exe").exists():
+            die(f"Steam didn't install, see {log}")
+        if not cfg.get("exe"):
+            cfg.update(exe=STEAM_EXE, args=STEAM_ARGS)
+        elif cfg["exe"].lower() != STEAM_EXE.lower():
+            cfg.setdefault("programs", []).append({"name": "Steam", "exe": STEAM_EXE, "args": STEAM_ARGS})
+        report["added"].append({"name": "Steam", "exe": STEAM_EXE, "args": STEAM_ARGS})
+    else:
+        installer = Path(args.what).expanduser().resolve()
+        if not installer.is_file():
+            die(f"no installer at {installer}")
+        cmd = [wine_bin(rt), "msiexec", "/i", installer] if installer.suffix.lower() == ".msi" else [wine_bin(rt), installer]
+        print(f"running {installer.name}, finish the installer's window")
+        with open(log, "w") as out:
+            report["exit"] = subprocess.run(cmd, env=env, stdout=out, stderr=out).returncode
+            if wait_all:
+                subprocess.run([rt / "bin/wineserver", "-w"], env=env)
+        known = {p["exe"].lower() for p in cfg.get("programs", [])} | {cfg.get("exe", "").lower()}
+        for program in new_shortcuts(args.name, start):
+            if program["exe"].lower() not in known:
+                cfg.setdefault("programs", []).append(program)
+                report["added"].append(program)
+    save(args.name, cfg)
+    if args.json:
+        print(json.dumps(report))
+    elif report["added"]:
+        print("added:", ", ".join(p["name"] for p in report["added"]))
+    else:
+        print(f"the installer made no shortcuts; add the program with: porta program add {args.name} <name> <exe>")
+
+
+def cmd_delete(args):
+    load(args.name)
+    if server_running(args.name):
+        cmd_kill(args)
+    trash = Path.home() / ".Trash"
+    dest = trash / args.name
+    if dest.exists():
+        dest = trash / f"{args.name} {time.strftime('%Y-%m-%d %H.%M.%S')}"
+    shutil.move(prefix_dir(args.name), dest)
+    print(f"moved {args.name} to the Trash")
 
 
 def cmd_wine(args):
@@ -603,6 +765,16 @@ def main():
     r.add_argument("--fg", action="store_true", help="stay attached instead of logging to a file")
     r.set_defaults(fn=cmd_run)
 
+    i = sub.add_parser("install", help="install Steam, or run a Windows installer and add what it installs")
+    i.add_argument("name", help="prefix")
+    i.add_argument("what", help="'steam', or the path of an installer (.exe or .msi) on the Mac")
+    i.add_argument("--json", action="store_true", help="report what was added as JSON")
+    i.set_defaults(fn=cmd_install)
+
+    d = sub.add_parser("delete", help="stop a prefix and move it to the Trash")
+    d.add_argument("name")
+    d.set_defaults(fn=cmd_delete)
+
     w = sub.add_parser("wine", help="run any wine command in a prefix, e.g. winecfg")
     w.add_argument("name")
     w.add_argument("args", nargs=argparse.REMAINDER)
@@ -627,6 +799,7 @@ def main():
     t.set_defaults(fn=cmd_selftest)
 
     args = p.parse_args()
+    sys.stdout.reconfigure(line_buffering=True)  # progress shows up as it happens, also in a pipe
     args.fn(args)
 
 

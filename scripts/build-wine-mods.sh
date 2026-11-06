@@ -14,16 +14,18 @@
 # Usage: scripts/build-wine-mods.sh [wine-version]    (default: 11.21)
 # Needs: Xcode CLT, Homebrew bison, autoconf and mingw-w64.
 # Env:   PORTA_HOME        data directory (default ~/Library/Application Support/Portamento)
+#        PORTA_BUILD       where the source and build trees go (default build/ in the checkout)
 #        PORTA_SOURCE_OUT  also write the patched source tree to this .tar.xz (for releases)
 set -euo pipefail
 
 VER="${1:-11.21}"
 MAJOR="${VER%%.*}"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+BUILD="${PORTA_BUILD:-$ROOT/build}"  # build trees; porta moves them out of an app bundle
 PORTA_HOME="${PORTA_HOME:-$HOME/Library/Application Support/Portamento}"
-SRC="$ROOT/build/src"
+SRC="$BUILD/src"
 TREE="$SRC/wine-$VER-full"
-OBJ="$ROOT/build/wine-$VER-full-x64"
+OBJ="$BUILD/wine-$VER-full-x64"
 DEST="$PORTA_HOME/runtimes/wine-mods-$VER"
 export PATH="/opt/homebrew/opt/bison/bin:$PATH"
 # Without this the binaries would only load on the macOS of the SDK they were built with.

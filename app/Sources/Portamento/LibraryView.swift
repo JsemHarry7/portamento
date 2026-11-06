@@ -10,6 +10,7 @@ final class LibraryState: ObservableObject {
 
 struct LibraryView: View {
     @Environment(Library.self) private var library
+    @EnvironmentObject private var content: ContentState
     var showPrefix: (Prefix) -> Void
     @StateObject private var state = LibraryState()
 
@@ -40,10 +41,23 @@ struct LibraryView: View {
         .background { Color.clear.contentShape(.rect).onTapGesture { state.selected = nil } }
         .overlay {
             if library.games.isEmpty {
-                ContentUnavailableView("Zatím tu nic není", systemImage: "gamecontroller",
-                                       description: Text("Vytvoř prefix a nainstaluj do něj hru nebo Steam."))
+                ContentUnavailableView {
+                    Label("Zatím tu nic není", systemImage: "gamecontroller")
+                } description: {
+                    Text("Nainstaluj Steam a hry z něj, nebo hru z vlastního instalátoru.")
+                } actions: {
+                    Button("Nainstalovat Steam") { content.installing = InstallRequest(source: .steam) }
+                        .buttonStyle(.glassProminent)
+                    Button("Hra ze souboru…") { content.installing = InstallRequest(source: .installer(nil)) }
+                        .buttonStyle(.glass)
+                }
             } else if shown.isEmpty {
                 ContentUnavailableView.search(text: state.query)
+            }
+        }
+        .safeAreaInset(edge: .top) {
+            if library.needsSetup || library.activity != nil {
+                RuntimeBanner().padding(.horizontal, Theme.contentPadding).padding(.top, 8)
             }
         }
         .searchable(text: $state.query, placement: .toolbar, prompt: "Hledat v knihovně")
@@ -71,6 +85,35 @@ struct LibraryView: View {
         let noun = games == 1 ? "položka" : (2...4).contains(games) ? "položky" : "položek"
         let running = library.runningCount
         return running > 0 ? "\(games) \(noun) · \(running) běží" : "\(games) \(noun)"
+    }
+}
+
+/// A runtime update porta can install (a new KosmicKrisp, say), or the one installing.
+struct RuntimeBanner: View {
+    @Environment(Library.self) private var library
+
+    private var names: String {
+        Component.all.filter { $0.isMissing(library.inventory.setup.missing) }.map(\.name).formatted(.list(type: .and))
+    }
+
+    var body: some View {
+        if let activity = library.activity, activity.title == "Příprava Portamenta" {
+            ActivityView(activity: activity)
+        } else if library.needsSetup {
+            HStack(spacing: 10) {
+                Image(systemName: "arrow.down.circle.fill").font(.title2).foregroundStyle(Theme.accent)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("Nové verze ke stažení").font(.headline)
+                    Text(names).font(.callout).foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button("Stáhnout") { Task { await library.runSetup() } }
+                    .buttonStyle(.glassProminent)
+                    .disabled(library.activity?.isRunning == true)
+            }
+            .padding(12)
+            .glassEffect(.regular, in: .rect(cornerRadius: 14))
+        }
     }
 }
 
@@ -376,6 +419,12 @@ struct GameInspector: View {
         VStack(alignment: .leading, spacing: 4) {
             if let folder = preferred.program.folderURL(in: preferred.prefix) {
                 Button("Otevřít složku hry", systemImage: "folder") { NSWorkspace.shared.open(folder) }
+            }
+            if let log = preferred.program.log, FileManager.default.fileExists(atPath: log) {
+                Button("Zobrazit výpis", systemImage: "doc.text.magnifyingglass") {
+                    NSWorkspace.shared.open(URL(fileURLWithPath: log))
+                }
+                .help("Co program naposledy vypsal, užitečné, když se nespustí")
             }
             Button("Zobrazit prefix", systemImage: "shippingbox") { showPrefix(preferred.prefix) }
         }

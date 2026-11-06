@@ -44,16 +44,22 @@ Everything lives in `~/Library/Application Support/Portamento` (set
 ## Using it
 
 ```sh
-porta create steam --exe 'C:\Program Files (x86)\Steam\steam.exe'
-porta wine steam ~/Downloads/SteamSetup.exe      # install Steam into it
+porta create steam                               # a prefix, on the default Wine and backend
+porta install steam steam                        # install Steam into it (and make it the prefix's program)
 porta run steam                                  # start Steam; installed games show up in the app
+porta install mygame ~/Downloads/setup.exe       # run a game's installer; its shortcuts become programs
 porta run --hud steam 'C:\path\to\game.exe'      # with Apple's Metal performance HUD
 porta set steam gfx dxvk                         # switch the graphics backend
 porta set steam vulkan kosmickrisp               # switch the Vulkan driver
 porta override steam Game.exe d3dcompiler_47=native,builtin
 porta selftest                                   # D3D9/11/12, Vulkan, OpenGL on every combination
 porta list
+porta delete mygame                              # stop a prefix and move it to the Trash
 ```
+
+The app does the same from its File menu and the + button: install Steam, or a
+game from its installer (also by opening an `.exe`/`.msi` with Portamento in
+Finder), and on first start it runs `porta setup` with a progress view.
 
 Options go before the prefix name (`porta run --hud steam`, not `porta run steam --hud`).
 

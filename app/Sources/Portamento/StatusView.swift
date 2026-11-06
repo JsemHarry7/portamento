@@ -6,6 +6,29 @@ struct StatusView: View {
 
     var body: some View {
         Form {
+            Section {
+                if library.inventory.setup.missing.isEmpty {
+                    Label("Všechno je nainstalované", systemImage: "checkmark.circle.fill").foregroundStyle(.green)
+                } else {
+                    ForEach(Component.all.filter { $0.isMissing(library.inventory.setup.missing) }) { component in
+                        LabeledContent(component.name) {
+                            Text("chybí").foregroundStyle(.secondary)
+                        }
+                    }
+                }
+                if let activity = library.activity, activity.title == "Příprava Portamenta" {
+                    ActivityView(activity: activity)
+                }
+            } header: {
+                HStack {
+                    Text("Runtimy")
+                    Spacer()
+                    if !library.inventory.setup.missing.isEmpty {
+                        Button("Doinstalovat") { Task { await library.runSetup() } }
+                            .disabled(library.activity?.isRunning == true)
+                    }
+                }
+            }
             Section("Wine") {
                 ForEach(library.inventory.wines.keys.sorted(), id: \.self) { wine in
                     installed(Theme.wineName(wine), library.inventory.wines[wine] == true)

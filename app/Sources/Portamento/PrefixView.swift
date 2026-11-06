@@ -3,8 +3,14 @@ import Combine
 import SwiftUI
 import UniformTypeIdentifiers
 
+final class PrefixState: ObservableObject {
+    @Published var confirmingDelete = false
+}
+
 struct PrefixView: View {
     @Environment(Library.self) private var library
+    @EnvironmentObject private var content: ContentState
+    @StateObject private var state = PrefixState()
     var prefix: Prefix
 
     /// D3DMetal comes with its own Wine; the other backends run on any other Wine.
@@ -49,7 +55,12 @@ struct PrefixView: View {
                         .labelStyle(.iconOnly)
                     }
                 }
-                Button("Přidat program…", systemImage: "plus") { addProgram() }
+                HStack {
+                    Button("Přidat program…", systemImage: "plus") { addProgram() }
+                    Button("Nainstalovat…", systemImage: "square.and.arrow.down") {
+                        content.installing = InstallRequest(prefix: prefix.name)
+                    }
+                }
             }
 
             if !prefix.env.isEmpty {
@@ -64,9 +75,33 @@ struct PrefixView: View {
         .navigationTitle(prefix.name)
         .toolbar {
             Button("Disk C:", systemImage: "folder") { NSWorkspace.shared.open(prefix.driveC) }
+            Menu("Nástroje Wine", systemImage: "wrench.and.screwdriver") {
+                ForEach(Self.tools, id: \.command) { tool in
+                    Button(tool.title, systemImage: tool.symbol) {
+                        Task { await library.openTool(tool.command, in: prefix) }
+                    }
+                }
+            }
             Button("Ukončit vše", systemImage: "stop.fill") { Task { await library.kill(prefix) } }
+            Button("Smazat prefix", systemImage: "trash") { state.confirmingDelete = true }
+        }
+        .confirmationDialog("Smazat prefix \(prefix.name)?", isPresented: $state.confirmingDelete) {
+            Button("Přesunout do koše", role: .destructive) {
+                Task {
+                    await library.delete(prefix)
+                    content.selection = .library
+                }
+            }
+        } message: {
+            Text("Prefix i všechno nainstalované v něm (\(prefix.programs.count == 1 ? "1 program" : "\(prefix.programs.count) programů")) se přesune do koše. Běžící programy se ukončí.")
         }
     }
+
+    private static let tools = [
+        (title: "Nastavení Wine", symbol: "slider.horizontal.3", command: "winecfg"),
+        (title: "Editor registru", symbol: "list.bullet.indent", command: "regedit"),
+        (title: "Správce úloh", symbol: "list.bullet.rectangle", command: "taskmgr"),
+    ]
 
     /// A setting that writes through to porta when changed.
     private func binding(_ path: KeyPath<Prefix, String>, key: String) -> Binding<String> {
