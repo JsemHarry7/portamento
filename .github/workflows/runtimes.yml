@@ -30,7 +30,7 @@ jobs:
             brew: bison mingw-w64 freetype gnutls
             needs-staging: true
           - script: scripts/build-kosmickrisp.sh
-            brew: meson ninja pkgconf bison llvm spirv-llvm-translator libclc
+            brew: meson ninja pkgconf bison llvm spirv-llvm-translator spirv-tools glslang libclc
           - script: tests/build.sh
             brew: mingw-w64 vulkan-headers
     env:
@@ -86,7 +86,9 @@ jobs:
         with:
           name: logs-${{ strategy.job-index }}
           path: |
-            build/**/*.log
+            build/*.log
+            build/*/*.log
+            build/*/meson-logs/meson-log.txt
           if-no-files-found: ignore
 
       - uses: actions/upload-artifact@v7

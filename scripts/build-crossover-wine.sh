@@ -25,6 +25,7 @@ DEST="$PORTA_HOME/runtimes/wine-cx-$VER"
 TARBALL="$PORTA_HOME/downloads/crossover-sources-$VER.tar.gz"
 # configure splits LDFLAGS on spaces, so reach the libraries through a link without any
 LIBS="$ROOT/build/deps-x64"
+mkdir -p "$ROOT/build"
 ln -sfn "${PORTA_DEPS:-$PORTA_HOME/runtimes/wine-11.21-staging/lib}" "$LIBS"
 [ -f "$LIBS/libfreetype.6.dylib" ] || { echo "no x86_64 libraries in $LIBS, run porta setup first" >&2; exit 1; }
 export PATH="/opt/homebrew/opt/bison/bin:$PATH"

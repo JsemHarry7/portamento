@@ -9,7 +9,7 @@
 #
 # Usage: scripts/build-kosmickrisp.sh [mesa-version]    (default: 26.2.6)
 # Needs: Xcode CLT and Homebrew meson, ninja, pkgconf, bison, llvm,
-#        spirv-llvm-translator, libclc.
+#        spirv-llvm-translator, spirv-tools, glslang, libclc.
 # Env:   PORTA_HOME        data directory (default ~/Library/Application Support/Portamento)
 #        PORTA_SOURCE_OUT  also write the patched source tree to this .tar.xz (for releases)
 set -euo pipefail
@@ -26,6 +26,11 @@ export MACOSX_DEPLOYMENT_TARGET="${MACOSX_DEPLOYMENT_TARGET:-26.0}"
 # Builds run at background QoS so they stay off the performance cores and out of
 # the way of whatever else is running; CI sets PORTA_NICE= to run at full speed.
 NICE="${PORTA_NICE-taskpolicy -b}"
+# meson setup is chatty: keep its output in a log and show the end when it fails
+setup() {
+    local log="$1"; shift
+    $NICE meson setup "$@" > "$log" 2>&1 || { tail -n 60 "$log" >&2; exit 1; }
+}
 COMMON=(-Dbuildtype=release -Dplatforms=macos -Dvulkan-drivers=kosmickrisp -Dgallium-drivers=
         -Dglx=disabled -Degl=disabled -Dgles1=disabled -Dgles2=disabled -Dopengl=false
         -Dxmlconfig=disabled -Dzstd=disabled -Dvalgrind=disabled -Dlibunwind=disabled)
@@ -46,8 +51,8 @@ fi
 export PATH="$BUILD/venv-mesa/bin:/opt/homebrew/opt/llvm/bin:/opt/homebrew/opt/bison/bin:/opt/homebrew/bin:$PATH"
 export PKG_CONFIG_PATH="/opt/homebrew/opt/libclc/share/pkgconfig:/opt/homebrew/opt/spirv-llvm-translator/lib/pkgconfig:/opt/homebrew/lib/pkgconfig"
 rm -rf "$BUILD/mesa-native" "$BUILD/mesa-tools"
-$NICE meson setup "$BUILD/mesa-native" "$SRC" "${COMMON[@]}" -Dllvm=enabled \
-    -Dmesa-clc=enabled -Dinstall-mesa-clc=true -Dprecomp-compiler=enabled -Dinstall-precomp-compiler=true > /dev/null
+setup "$BUILD/mesa-native-setup.log" "$BUILD/mesa-native" "$SRC" "${COMMON[@]}" -Dllvm=enabled \
+    -Dmesa-clc=enabled -Dinstall-mesa-clc=true -Dprecomp-compiler=enabled -Dinstall-precomp-compiler=true
 TOOLS=(src/compiler/clc/mesa_clc src/kosmickrisp/clc/kk_clc src/kosmickrisp/kosmicomp src/compiler/spirv/vtn_bindgen2)
 $NICE ninja -C "$BUILD/mesa-native" "${TOOLS[@]}"
 mkdir -p "$BUILD/mesa-tools"
@@ -58,9 +63,9 @@ export PATH="$BUILD/mesa-tools:$PATH"
 unset PKG_CONFIG_PATH
 rm -rf "$BUILD/mesa-x86_64"
 COMPAT="$ROOT/scripts/mesa-compat"  # endian.h shim, see the header
-$NICE meson setup "$BUILD/mesa-x86_64" "$SRC" --cross-file "$ROOT/scripts/mesa-x86_64.cross" \
+setup "$BUILD/mesa-x86_64-setup.log" "$BUILD/mesa-x86_64" "$SRC" --cross-file "$ROOT/scripts/mesa-x86_64.cross" \
     "${COMMON[@]}" -Dllvm=disabled -Dmesa-clc=system -Dprecomp-compiler=system \
-    -Dc_args="-I$COMPAT" -Dcpp_args="-I$COMPAT" -Dobjc_args="-I$COMPAT" -Dobjcpp_args="-I$COMPAT" > /dev/null
+    -Dc_args="-I$COMPAT" -Dcpp_args="-I$COMPAT" -Dobjc_args="-I$COMPAT" -Dobjcpp_args="-I$COMPAT"
 $NICE ninja -C "$BUILD/mesa-x86_64"
 
 rm -rf "$DEST"
