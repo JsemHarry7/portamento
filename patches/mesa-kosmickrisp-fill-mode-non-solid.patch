@@ -1,7 +1,7 @@
 diff -ruN a/src/kosmickrisp/bridge/mtl_encoder.h b/src/kosmickrisp/bridge/mtl_encoder.h
---- a/src/kosmickrisp/bridge/mtl_encoder.h	2026-10-28 16:17:44
-+++ b/src/kosmickrisp/bridge/mtl_encoder.h	2026-11-06 16:26:15
-@@ -88,6 +88,9 @@
+--- a/src/kosmickrisp/bridge/mtl_encoder.h	2026-10-30 23:57:07
++++ b/src/kosmickrisp/bridge/mtl_encoder.h	2026-11-06 21:28:55
+@@ -96,6 +96,9 @@
  
  void mtl_set_cull_mode(mtl_render_encoder *encoder, enum mtl_cull_mode mode);
  
@@ -12,9 +12,9 @@ diff -ruN a/src/kosmickrisp/bridge/mtl_encoder.h b/src/kosmickrisp/bridge/mtl_en
                                      enum mtl_visibility_result_mode mode,
                                      size_t offset);
 diff -ruN a/src/kosmickrisp/bridge/mtl_encoder.m b/src/kosmickrisp/bridge/mtl_encoder.m
---- a/src/kosmickrisp/bridge/mtl_encoder.m	2026-10-28 16:17:44
-+++ b/src/kosmickrisp/bridge/mtl_encoder.m	2026-11-06 16:26:15
-@@ -316,6 +316,16 @@
+--- a/src/kosmickrisp/bridge/mtl_encoder.m	2026-10-30 23:57:07
++++ b/src/kosmickrisp/bridge/mtl_encoder.m	2026-11-06 21:28:55
+@@ -352,6 +352,16 @@
  }
  
  void
@@ -32,9 +32,9 @@ diff -ruN a/src/kosmickrisp/bridge/mtl_encoder.m b/src/kosmickrisp/bridge/mtl_en
                                 enum mtl_visibility_result_mode mode,
                                 size_t offset)
 diff -ruN a/src/kosmickrisp/bridge/mtl_types.h b/src/kosmickrisp/bridge/mtl_types.h
---- a/src/kosmickrisp/bridge/mtl_types.h	2026-10-28 16:17:44
-+++ b/src/kosmickrisp/bridge/mtl_types.h	2026-11-06 16:26:15
-@@ -218,6 +218,11 @@
+--- a/src/kosmickrisp/bridge/mtl_types.h	2026-10-30 23:57:07
++++ b/src/kosmickrisp/bridge/mtl_types.h	2026-11-06 21:28:55
+@@ -235,6 +235,11 @@
     MTL_CULL_MODE_BACK = 2,
  };
  
@@ -47,9 +47,9 @@ diff -ruN a/src/kosmickrisp/bridge/mtl_types.h b/src/kosmickrisp/bridge/mtl_type
     MTL_VISIBILITY_RESULT_MODE_DISABLED = 0,
     MTL_VISIBILITY_RESULT_MODE_BOOLEAN = 1,
 diff -ruN a/src/kosmickrisp/bridge/stubs/mtl_encoder.c b/src/kosmickrisp/bridge/stubs/mtl_encoder.c
---- a/src/kosmickrisp/bridge/stubs/mtl_encoder.c	2026-10-28 16:17:44
-+++ b/src/kosmickrisp/bridge/stubs/mtl_encoder.c	2026-11-06 16:26:15
-@@ -154,6 +154,12 @@
+--- a/src/kosmickrisp/bridge/stubs/mtl_encoder.c	2026-10-30 23:57:07
++++ b/src/kosmickrisp/bridge/stubs/mtl_encoder.c	2026-11-06 21:28:55
+@@ -174,6 +174,12 @@
  }
  
  void
@@ -63,9 +63,9 @@ diff -ruN a/src/kosmickrisp/bridge/stubs/mtl_encoder.c b/src/kosmickrisp/bridge/
                                 enum mtl_visibility_result_mode mode,
                                 size_t offset)
 diff -ruN a/src/kosmickrisp/bridge/vk_to_mtl_map.c b/src/kosmickrisp/bridge/vk_to_mtl_map.c
---- a/src/kosmickrisp/bridge/vk_to_mtl_map.c	2026-10-28 16:17:44
-+++ b/src/kosmickrisp/bridge/vk_to_mtl_map.c	2026-11-06 16:26:15
-@@ -239,6 +239,20 @@
+--- a/src/kosmickrisp/bridge/vk_to_mtl_map.c	2026-10-30 23:57:07
++++ b/src/kosmickrisp/bridge/vk_to_mtl_map.c	2026-11-06 21:28:55
+@@ -279,6 +279,20 @@
     }
  }
  
@@ -87,17 +87,17 @@ diff -ruN a/src/kosmickrisp/bridge/vk_to_mtl_map.c b/src/kosmickrisp/bridge/vk_t
  index_size_in_bytes_to_mtl_index_type(unsigned bytes)
  {
 diff -ruN a/src/kosmickrisp/bridge/vk_to_mtl_map.h b/src/kosmickrisp/bridge/vk_to_mtl_map.h
---- a/src/kosmickrisp/bridge/vk_to_mtl_map.h	2026-10-28 16:17:44
-+++ b/src/kosmickrisp/bridge/vk_to_mtl_map.h	2026-11-06 16:26:15
-@@ -35,6 +35,7 @@
- enum VkCompareOp;
+--- a/src/kosmickrisp/bridge/vk_to_mtl_map.h	2026-10-30 23:57:07
++++ b/src/kosmickrisp/bridge/vk_to_mtl_map.h	2026-11-06 21:29:14
+@@ -40,6 +40,7 @@
  enum VkFrontFace;
  enum VkCullModeFlagBits;
+ enum VkResolveModeFlagBits;
 +enum VkPolygonMode;
  
  /* STRUCTS */
  struct mtl_origin vk_offset_3d_to_mtl_origin(const struct VkOffset3D *offset);
-@@ -74,6 +75,9 @@
+@@ -83,6 +84,9 @@
  enum mtl_winding vk_front_face_to_mtl_winding(enum VkFrontFace face);
  
  enum mtl_cull_mode vk_front_face_to_mtl_cull_mode(enum VkCullModeFlagBits mode);
@@ -105,14 +105,12 @@ diff -ruN a/src/kosmickrisp/bridge/vk_to_mtl_map.h b/src/kosmickrisp/bridge/vk_t
 +enum mtl_triangle_fill_mode
 +vk_polygon_mode_to_mtl_triangle_fill_mode(enum VkPolygonMode mode);
  
- enum mtl_index_type index_size_in_bytes_to_mtl_index_type(unsigned bytes);
- 
-Binary files a/src/kosmickrisp/util/__pycache__/vk_entrypoints.cpython-315.pyc and b/src/kosmickrisp/util/__pycache__/vk_entrypoints.cpython-315.pyc differ
-Binary files a/src/kosmickrisp/util/__pycache__/vk_extensions.cpython-315.pyc and b/src/kosmickrisp/util/__pycache__/vk_extensions.cpython-315.pyc differ
+ enum mtl_depth_resolve_filter
+ vk_resolve_mode_to_mtl_depth_resolve_filter(
 diff -ruN a/src/kosmickrisp/vulkan/kk_cmd_draw.c b/src/kosmickrisp/vulkan/kk_cmd_draw.c
---- a/src/kosmickrisp/vulkan/kk_cmd_draw.c	2026-10-28 16:17:44
-+++ b/src/kosmickrisp/vulkan/kk_cmd_draw.c	2026-11-06 16:26:15
-@@ -1213,6 +1213,10 @@
+--- a/src/kosmickrisp/vulkan/kk_cmd_draw.c	2026-10-30 23:57:07
++++ b/src/kosmickrisp/vulkan/kk_cmd_draw.c	2026-11-06 21:28:55
+@@ -1282,6 +1282,10 @@
        }
     }
  
@@ -124,9 +122,9 @@ diff -ruN a/src/kosmickrisp/vulkan/kk_cmd_draw.c b/src/kosmickrisp/vulkan/kk_cmd
        /* Only disable rendering if primitive type is culled. */
        gfx->is_cull_front_and_back =
 diff -ruN a/src/kosmickrisp/vulkan/kk_physical_device.c b/src/kosmickrisp/vulkan/kk_physical_device.c
---- a/src/kosmickrisp/vulkan/kk_physical_device.c	2026-10-28 16:17:44
-+++ b/src/kosmickrisp/vulkan/kk_physical_device.c	2026-11-06 16:26:15
-@@ -211,6 +211,7 @@
+--- a/src/kosmickrisp/vulkan/kk_physical_device.c	2026-10-30 23:57:07
++++ b/src/kosmickrisp/vulkan/kk_physical_device.c	2026-11-06 21:28:55
+@@ -231,6 +231,7 @@
        .depthClamp = true,
        .drawIndirectFirstInstance = true,
        .dualSrcBlend = true,

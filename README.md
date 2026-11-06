@@ -93,6 +93,11 @@ so it takes no extra disk space. A few things needed patches; they are in
 - **ntdll-export-wine-unix-call**: exports `__wine_unix_call` for D3DMetal's PE modules.
 - **mesa-kosmickrisp-fill-mode-non-solid**: wireframe polygon mode for
   KosmicKrisp, which BeamNG's Vulkan renderer requires.
+- **mesa-wsi-metal-drawable-count**: a swap chain of more than 3 images (BeamNG
+  asks for 4) made `CAMetalLayer` throw and kill the game; the layer now gets at
+  most 3 drawables. KosmicKrisp is built from Mesa 26.3, as 26.2 kept the
+  drawables of swap chains that were recreated, so games ran out of them and
+  stalled at a few fps.
 
 ## Repository layout
 

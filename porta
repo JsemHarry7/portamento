@@ -73,7 +73,7 @@ BACKENDS = {
 BACKEND_WINE = {"d3dmetal": "gptk"}
 DEFAULT_GFX = "dxmt"
 
-KOSMICKRISP_VERSION = "26.2.6"
+KOSMICKRISP_VERSION = "26.3.0-rc3"  # 26.2 leaks swap chain drawables (games stall at a few fps)
 # Vulkan drivers a prefix can use: Wine's bundled MoltenVK, or Mesa's KosmicKrisp
 # built for x86_64 by scripts/build-kosmickrisp.sh (has drawIndirectCount, which
 # BeamNG's Vulkan renderer requires)

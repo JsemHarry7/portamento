@@ -7,17 +7,18 @@
 # (mesa_clc, kk_clc, kosmicomp, vtn_bindgen2, which need LLVM), then a cross
 # build of the driver itself that uses those tools.
 #
-# Usage: scripts/build-kosmickrisp.sh [mesa-version]    (default: 26.2.6)
+# Usage: scripts/build-kosmickrisp.sh [mesa-version]    (default: 26.3.0-rc3)
 # Needs: Xcode CLT and Homebrew meson, ninja, pkgconf, bison, llvm,
 #        spirv-llvm-translator, spirv-tools, glslang, libclc.
 # Env:   PORTA_HOME        data directory (default ~/Library/Application Support/Portamento)
+#        PORTA_BUILD       where the source and build trees go (default build/ in the checkout)
 #        PORTA_SOURCE_OUT  also write the patched source tree to this .tar.xz (for releases)
 set -euo pipefail
 
-VER="${1:-26.2.6}"
+VER="${1:-26.3.0-rc3}"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 PORTA_HOME="${PORTA_HOME:-$HOME/Library/Application Support/Portamento}"
-BUILD="$ROOT/build"
+BUILD="${PORTA_BUILD:-$ROOT/build}"  # build trees; porta moves them out of an app bundle
 SRC="$BUILD/src/mesa-$VER"
 TARBALL="$PORTA_HOME/downloads/mesa-$VER.tar.xz"
 DEST="$PORTA_HOME/runtimes/kosmickrisp-$VER"
@@ -39,8 +40,11 @@ mkdir -p "$(dirname "$TARBALL")" "$BUILD/src"
 [ -f "$TARBALL" ] || curl -fsSL -o "$TARBALL" "https://archive.mesa3d.org/mesa-$VER.tar.xz"
 rm -rf "$SRC"
 tar -xf "$TARBALL" -C "$BUILD/src"
-# wireframe polygon mode (fillModeNonSolid), required by BeamNG's Vulkan renderer
-(cd "$SRC" && patch -p1 --forward < "$ROOT/patches/mesa-kosmickrisp-fill-mode-non-solid.patch")
+# patches/mesa-*.patch: wireframe polygon mode (fillModeNonSolid, required by BeamNG's
+# Vulkan renderer), and no crash for swap chains of more than 3 images
+for p in "$ROOT"/patches/mesa-*.patch; do
+    (cd "$SRC" && patch -p1 --forward < "$p")
+done
 if [ -n "${PORTA_SOURCE_OUT:-}" ]; then
     tar -C "$BUILD/src" -cJf "$PORTA_SOURCE_OUT" "mesa-$VER"
 fi
@@ -71,7 +75,7 @@ $NICE ninja -C "$BUILD/mesa-x86_64"
 rm -rf "$DEST"
 mkdir -p "$DEST/lib" "$DEST/share/vulkan/icd.d" "$DEST/share/doc/mesa"
 cp "$BUILD/mesa-x86_64/src/kosmickrisp/vulkan/libvulkan_kosmickrisp.dylib" "$DEST/lib/"
-cp "$SRC/docs/license.rst" "$ROOT/patches/mesa-kosmickrisp-fill-mode-non-solid.patch" "$DEST/share/doc/mesa/"
+cp "$SRC/docs/license.rst" "$ROOT"/patches/mesa-*.patch "$DEST/share/doc/mesa/"
 cat > "$DEST/share/vulkan/icd.d/kosmickrisp_icd.x86_64.json" <<EOF
 {
     "ICD": {

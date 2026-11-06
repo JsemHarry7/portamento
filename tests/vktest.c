@@ -1,10 +1,11 @@
 /* Vulkan smoke test for Portamento's Vulkan drivers.
  *
  * Loads vulkan-1.dll at run time, reports the device and a few features games
- * depend on, creates a swap chain on a window, clears it to blue, copies the
- * first frame into a buffer to check the colour, then clears and presents
- * frames to measure throughput.  Prints "OK" and exits 0 only if the pixel
- * came out right.
+ * depend on, creates a swap chain on a window, recreates it a few times while
+ * holding an acquired image (as games do on a resize), clears it to blue,
+ * copies the first frame into a buffer to check the colour, then clears and
+ * presents frames to measure throughput.  Prints "OK" and exits 0 only if the
+ * pixel came out right.
  *
  * Build: x86_64-w64-mingw32-gcc -O2 -I<Vulkan SDK>/include -o vktest.exe vktest.c
  */
@@ -18,6 +19,9 @@
 #define WIDTH  1280
 #define HEIGHT 720
 #define MAX_IMAGES 8
+#define RECREATES 4           /* more than the drawables a CAMetalLayer hands out */
+#define ACQUIRE_TIMEOUT 3000000000ull  /* ns; a driver out of drawables never returns one */
+#define SLOW_ACQUIRE_MS 100   /* a frame or two at 60 Hz; short of drawables it's ~250 */
 
 #define VK_FUNCS \
     X(vkCreateInstance) \
@@ -33,6 +37,7 @@
     X(vkCreateDevice) \
     X(vkGetDeviceQueue) \
     X(vkCreateSwapchainKHR) \
+    X(vkDestroySwapchainKHR) \
     X(vkGetSwapchainImagesKHR) \
     X(vkAcquireNextImageKHR) \
     X(vkQueuePresentKHR) \
@@ -51,7 +56,10 @@
     X(vkAllocateMemory) \
     X(vkBindBufferMemory) \
     X(vkMapMemory) \
-    X(vkCreateSemaphore)
+    X(vkCreateSemaphore) \
+    X(vkCreateFence) \
+    X(vkWaitForFences) \
+    X(vkResetFences)
 
 static PFN_vkGetInstanceProcAddr vkGetInstanceProcAddr;
 #define X(name) static PFN_##name name;
@@ -67,7 +75,10 @@ static LRESULT CALLBACK wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 static void check(VkResult res, const char *what)
 {
     if (res == VK_SUCCESS || res == VK_SUBOPTIMAL_KHR) return;
-    printf("FAIL %s: VkResult %d\n", what, res);
+    if (res == VK_TIMEOUT || res == VK_NOT_READY)
+        printf("FAIL %s: no image within %llu s, the driver ran out of drawables\n", what, ACQUIRE_TIMEOUT / 1000000000ull);
+    else
+        printf("FAIL %s: VkResult %d\n", what, res);
     exit(1);
 }
 
@@ -120,6 +131,7 @@ int main(int argc, char **argv)
     VkBufferCreateInfo buffer_info = {VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
     VkMemoryAllocateInfo mem_info = {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
     VkSemaphoreCreateInfo sem_info = {VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
+    VkFenceCreateInfo fence_info = {VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
     VkImageSubresourceRange range = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
     VkPipelineStageFlags wait_stage = VK_PIPELINE_STAGE_TRANSFER_BIT;
     VkPhysicalDeviceMemoryProperties mem_props;
@@ -135,13 +147,15 @@ int main(int argc, char **argv)
     VkSurfaceKHR surface;
     VkDevice device;
     VkQueue queue;
-    VkSwapchainKHR swapchain;
+    VkSwapchainKHR swapchain, old;
+    VkFence fence;
     VkCommandPool pool;
     VkCommandBuffer cmd;
     VkBuffer buffer;
     VkDeviceMemory memory;
     VkSemaphore acquired, rendered;
-    LARGE_INTEGER freq, t0, t1;
+    LARGE_INTEGER freq, t0, t1, a0, a1;
+    double acquire_ms, slowest = 0;
     WNDCLASSW wc = {0};
     uint32_t count, family = ~0u, image_count = MAX_IMAGES, idx, i;
     float priority = 1.0f;
@@ -223,7 +237,9 @@ int main(int argc, char **argv)
     bgra = formats[0].format == VK_FORMAT_B8G8R8A8_UNORM || formats[0].format == VK_FORMAT_B8G8R8A8_SRGB;
     readback = !!(caps.supportedUsageFlags & VK_IMAGE_USAGE_TRANSFER_SRC_BIT);
     swapchain_info.surface = surface;
-    swapchain_info.minImageCount = caps.minImageCount < 2 ? 2 : caps.minImageCount;
+    /* One more than the minimum, as many games ask for, without clamping to
+     * maxImageCount like they don't either (BeamNG asks KosmicKrisp for 4 of 3). */
+    swapchain_info.minImageCount = (caps.minImageCount < 2 ? 2 : caps.minImageCount) + 1;
     swapchain_info.imageFormat = formats[0].format;
     swapchain_info.imageColorSpace = formats[0].colorSpace;
     swapchain_info.imageExtent = caps.currentExtent.width != ~0u ? caps.currentExtent : (VkExtent2D){WIDTH, HEIGHT};
@@ -234,6 +250,23 @@ int main(int argc, char **argv)
     swapchain_info.presentMode = VK_PRESENT_MODE_FIFO_KHR;
     swapchain_info.clipped = VK_TRUE;
     check(vkCreateSwapchainKHR(device, &swapchain_info, NULL, &swapchain), "vkCreateSwapchainKHR");
+
+    /* Recreate the swap chain while holding an image, the way games do when the
+     * window changes. Destroying the old one must give its drawables back:
+     * KosmicKrisp 26.2 kept them, and after three a game got no more frames. */
+    vkCreateFence(device, &fence_info, NULL, &fence);
+    for (i = 0; i < RECREATES; i++)
+    {
+        check(vkAcquireNextImageKHR(device, swapchain, ACQUIRE_TIMEOUT, VK_NULL_HANDLE, fence, &idx),
+              "vkAcquireNextImageKHR before recreating the swap chain");
+        vkWaitForFences(device, 1, &fence, VK_TRUE, UINT64_MAX);
+        vkResetFences(device, 1, &fence);
+        old = swapchain_info.oldSwapchain = swapchain;
+        check(vkCreateSwapchainKHR(device, &swapchain_info, NULL, &swapchain), "recreating the swap chain");
+        vkDestroySwapchainKHR(device, old, NULL);
+    }
+    swapchain_info.oldSwapchain = VK_NULL_HANDLE;
+    printf("recreated the swap chain %d times with an image acquired\n", RECREATES);
     vkGetSwapchainImagesKHR(device, swapchain, &image_count, images);
 
     vkGetPhysicalDeviceMemoryProperties(phys, &mem_props);
@@ -276,8 +309,12 @@ int main(int argc, char **argv)
 
         while (PeekMessageW(&msg, NULL, 0, 0, PM_REMOVE)) DispatchMessageW(&msg);
 
-        check(vkAcquireNextImageKHR(device, swapchain, UINT64_MAX, acquired, VK_NULL_HANDLE, &idx),
+        QueryPerformanceCounter(&a0);
+        check(vkAcquireNextImageKHR(device, swapchain, ACQUIRE_TIMEOUT, acquired, VK_NULL_HANDLE, &idx),
               "vkAcquireNextImageKHR");
+        QueryPerformanceCounter(&a1);
+        acquire_ms = (a1.QuadPart - a0.QuadPart) * 1000.0 / freq.QuadPart;
+        if (i > 0 && acquire_ms > slowest) slowest = acquire_ms;
         vkResetCommandBuffer(cmd, 0);
         vkBeginCommandBuffer(cmd, &begin_info);
         barrier(cmd, images[idx], VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
@@ -327,8 +364,15 @@ int main(int argc, char **argv)
     printf("presented %d frames in %.2f s (%.0f fps)\n", frames,
            (double)(t1.QuadPart - t0.QuadPart) / freq.QuadPart,
            frames * (double)freq.QuadPart / (t1.QuadPart - t0.QuadPart));
+    printf("slowest acquire: %.0f ms\n", slowest);
     if (!readback) printf("FAIL swap chain images can't be read back\n");
-    else printf("%s\n", ok ? "OK" : "FAIL wrong pixel");
+    else if (!ok) printf("FAIL wrong pixel\n");
+    else if (slowest > SLOW_ACQUIRE_MS)
+    {
+        printf("FAIL waited %.0f ms for a swap chain image, the driver is short of drawables\n", slowest);
+        ok = 0;
+    }
+    else printf("OK\n");
     DestroyWindow(hwnd);
     return ok ? 0 : 1;
 }
