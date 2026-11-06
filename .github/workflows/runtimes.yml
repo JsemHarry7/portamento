@@ -58,12 +58,14 @@ jobs:
       - name: Fetch Gcenx wine-staging (libraries the CrossOver Wine links against)
         if: matrix.needs-staging
         run: |
+          # fetch() reports what it downloads on stdout too; the path is the last line
           deps=$(python3 -c '
           import runpy
           porta = runpy.run_path("porta")
           porta["fetch"]("wine")
           print(porta["WINE_APP"] / "lib")
-          ')
+          ' | tail -n 1)
+          test -f "$deps/libfreetype.6.dylib"
           echo "PORTA_DEPS=$deps" >> "$GITHUB_ENV"
 
       - name: Build
