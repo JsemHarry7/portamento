@@ -85,7 +85,7 @@ VULKAN_DRIVERS = {
 # GitHub releases, made by .github/workflows/runtimes.yml from the same scripts.
 # Each archive unpacks into RUNTIMES/<name>/; SHA256SUMS in the release covers them all.
 RELEASES = os.environ.get("PORTA_RELEASES", "https://github.com/JsemHarry7/portamento/releases/download")
-RUNTIME_RELEASE = "runtimes-2"
+RUNTIME_RELEASE = "runtimes-3"
 PREBUILT = {  # name -> (script that builds it from source, version passed to it)
     MODS_DIR.name: ("scripts/build-wine-mods.sh", WINE_VERSION),
     f"wine-cx-{CX_VERSION}": ("scripts/build-crossover-wine.sh", CX_VERSION),
