@@ -1,0 +1,266 @@
+Generated-by: LLM
+
+diff -ruN a/src/kosmickrisp/vulkan/kk_cmd_buffer.c b/src/kosmickrisp/vulkan/kk_cmd_buffer.c
+--- a/src/kosmickrisp/vulkan/kk_cmd_buffer.c	2026-10-30 23:57:07
++++ b/src/kosmickrisp/vulkan/kk_cmd_buffer.c	2026-11-06 22:24:15
+@@ -58,6 +58,18 @@
+    util_dynarray_clear(&cmd->ts_stage_map);
+ }
+ 
++static void
++return_segments(struct kk_cmd_buffer *cmd)
++{
++   struct kk_cmd_pool *pool = kk_cmd_buffer_pool(cmd);
++
++   util_dynarray_foreach(&cmd->metal.segments, mtl_command_buffer *, seg) {
++      if (*seg)
++         kk_cmd_pool_return_cmd_buf(pool, *seg);
++   }
++   util_dynarray_clear(&cmd->metal.segments);
++}
++
+ /* Ends Metal command buffer recording and returns allocator to pool for reuse */
+ static void
+ end_recording(struct kk_cmd_buffer *cmd)
+@@ -66,6 +78,7 @@
+       return;
+ 
+    cs_end(cmd);
++   kk_cmd_buffer_end_hoist(cmd);
+    mtl_end_command_buffer(cmd->metal.cmd_buf);
+    kk_cmd_pool_return_allocator(kk_cmd_buffer_pool(cmd), cmd->metal.allocator);
+    cmd->metal.allocator = NULL;
+@@ -83,6 +96,8 @@
+ 
+    /* Ensure closed command buffer for safe returns to pool */
+    end_recording(cmd);
++   return_segments(cmd);
++   util_dynarray_fini(&cmd->metal.segments);
+    if (cmd->metal.cmd_buf)
+       kk_cmd_pool_return_cmd_buf(pool, cmd->metal.cmd_buf);
+    cmd->metal.cmd_buf = NULL;
+@@ -128,6 +143,7 @@
+ 
+    cmd->ts_resolves = UTIL_DYNARRAY_INIT;
+    cmd->ts_stage_map = UTIL_DYNARRAY_INIT;
++   cmd->metal.segments = UTIL_DYNARRAY_INIT;
+    cmd->post_render_writes = UTIL_DYNARRAY_INIT;
+ 
+    {
+@@ -163,6 +179,7 @@
+ 
+    /* Ensure closed command buffer so we can start it again */
+    end_recording(cmd);
++   return_segments(cmd);
+    kk_cmd_release_resources(dev, cmd);
+ 
+    cmd->uploader.bo = NULL;
+@@ -330,6 +347,82 @@
+    return cmd->metal.compute;
+ }
+ 
++void
++kk_cmd_buffer_begin_hoist(struct kk_cmd_buffer *cmd)
++{
++   struct kk_device *dev = kk_cmd_buffer_device(cmd);
++   struct kk_cmd_pool *pool = kk_cmd_buffer_pool(cmd);
++
++   kk_cmd_buffer_end_hoist(cmd);
++   if (!dev->uses_indirect_count)
++      return;
++
++   cs_end(cmd);
++   mtl_end_command_buffer(cmd->metal.cmd_buf);
++   util_dynarray_append(&cmd->metal.segments, cmd->metal.cmd_buf);
++   cmd->metal.hoist_slot = util_dynarray_num_elements(&cmd->metal.segments,
++                                                      mtl_command_buffer *);
++   util_dynarray_append(&cmd->metal.segments, (mtl_command_buffer *)NULL);
++
++   cmd->metal.cmd_buf = kk_cmd_pool_get_cmd_buf(pool);
++   if (cmd->vk.base.object_name)
++      mtl_command_buffer_set_label(cmd->metal.cmd_buf, cmd->vk.base.object_name);
++   mtl_begin_command_buffer(cmd->metal.cmd_buf, cmd->metal.allocator);
++   cmd->metal.hoist_open = true;
++}
++
++void
++kk_cmd_buffer_end_hoist(struct kk_cmd_buffer *cmd)
++{
++   if (!cmd->metal.hoist_open)
++      return;
++   cmd->metal.hoist_open = false;
++
++   if (cmd->metal.hoist_compute) {
++      mtl_barrier_after_stages(cmd->metal.hoist_compute, MTL_STAGE_ALL,
++                               MTL_STAGE_ALL);
++      mtl_end_encoding(cmd->metal.hoist_compute);
++      mtl_release(cmd->metal.hoist_compute);
++      cmd->metal.hoist_compute = NULL;
++   }
++
++   if (cmd->metal.hoist_cmd_buf) {
++      mtl_end_command_buffer(cmd->metal.hoist_cmd_buf);
++      *util_dynarray_element(&cmd->metal.segments, mtl_command_buffer *,
++                             cmd->metal.hoist_slot) = cmd->metal.hoist_cmd_buf;
++      cmd->metal.hoist_cmd_buf = NULL;
++      kk_cmd_pool_return_allocator(kk_cmd_buffer_pool(cmd),
++                                   cmd->metal.hoist_allocator);
++      cmd->metal.hoist_allocator = NULL;
++   }
++}
++
++static mtl_compute_encoder *
++hoisted_compute(struct kk_cmd_buffer *cmd)
++{
++   struct kk_cmd_pool *pool = kk_cmd_buffer_pool(cmd);
++
++   if (!cmd->metal.hoist_open)
++      return NULL;
++
++   if (!cmd->metal.hoist_cmd_buf) {
++      cmd->metal.hoist_cmd_buf = kk_cmd_pool_get_cmd_buf(pool);
++      cmd->metal.hoist_allocator = kk_cmd_pool_get_allocator(pool);
++      mtl_begin_command_buffer(cmd->metal.hoist_cmd_buf,
++                               cmd->metal.hoist_allocator);
++   }
++
++   if (!cmd->metal.hoist_compute) {
++      cmd->metal.hoist_compute =
++         mtl_new_compute_command_encoder(cmd->metal.hoist_cmd_buf);
++      mtl_compute_set_argument_table(cmd->metal.hoist_compute,
++                                     cmd->argument_table);
++      kk_encoder_update_debug(cmd, cmd->metal.hoist_compute);
++   }
++
++   return cmd->metal.hoist_compute;
++}
++
+ static void
+ end_encoder(struct kk_cmd_buffer *cmd, mtl_command_encoder *encoder)
+ {
+@@ -806,7 +899,9 @@
+    struct kk_device *dev = kk_cmd_buffer_device(cmd);
+    struct kk_precompiled_shader *prog = &dev->precompiled_cache.shaders[idx];
+ 
+-   mtl_compute_encoder *encoder = cs_get_compute(cmd);
++   mtl_compute_encoder *encoder = cmd->hoist_precomp ? hoisted_compute(cmd) : NULL;
++   if (!encoder)
++      encoder = cs_get_compute(cmd);
+    mtl_barrier_after_encoder_stages(encoder, MTL_STAGE_DISPATCH,
+                                     MTL_STAGE_DISPATCH);
+ 
+diff -ruN a/src/kosmickrisp/vulkan/kk_cmd_buffer.h b/src/kosmickrisp/vulkan/kk_cmd_buffer.h
+--- a/src/kosmickrisp/vulkan/kk_cmd_buffer.h	2026-10-30 23:57:07
++++ b/src/kosmickrisp/vulkan/kk_cmd_buffer.h	2026-11-06 22:24:15
+@@ -229,7 +229,14 @@
+       mtl_command_buffer *cmd_buf;
+       mtl_render_encoder *render;
+       mtl_compute_encoder *compute;
++      struct util_dynarray segments;
++      uint32_t hoist_slot;
++      bool hoist_open;
++      mtl_command_allocator *hoist_allocator;
++      mtl_command_buffer *hoist_cmd_buf;
++      mtl_compute_encoder *hoist_compute;
+    } metal;
++   bool hoist_precomp;
+    /* Pending timestamp resolves (struct kk_ts_resolve), flushed at cs_end. */
+    struct util_dynarray ts_resolves;
+    /* Timestamps already sampled by the current render encoder. (struct
+@@ -302,6 +309,9 @@
+ void cs_start_render(struct kk_cmd_buffer *cmd);
+ mtl_render_encoder *cs_get_render(struct kk_cmd_buffer *cmd);
+ mtl_compute_encoder *cs_get_compute(struct kk_cmd_buffer *cmd);
++
++void kk_cmd_buffer_begin_hoist(struct kk_cmd_buffer *cmd);
++void kk_cmd_buffer_end_hoist(struct kk_cmd_buffer *cmd);
+ void cs_end(struct kk_cmd_buffer *cmd);
+ void kk_cmd_bind_root_to_argument_table(struct kk_cmd_buffer *cmd,
+                                         uint64_t addr);
+diff -ruN a/src/kosmickrisp/vulkan/kk_cmd_draw.c b/src/kosmickrisp/vulkan/kk_cmd_draw.c
+--- a/src/kosmickrisp/vulkan/kk_cmd_draw.c	2026-11-06 22:24:15
++++ b/src/kosmickrisp/vulkan/kk_cmd_draw.c	2026-11-06 22:24:15
+@@ -258,6 +258,7 @@
+ 
+    struct kk_rendering_state *render = &cmd->state.gfx.render;
+ 
++   kk_cmd_buffer_begin_hoist(cmd);
+    memset(render, 0, sizeof(*render));
+ 
+    render->flags = pRenderingInfo->flags;
+@@ -630,6 +631,7 @@
+ 
+    /* Clean up previous encoder */
+    cs_end(cmd);
++   kk_cmd_buffer_end_hoist(cmd);
+    mtl_release(cmd->state.gfx.render_pass_descriptor);
+    cmd->state.gfx.render_pass_descriptor = NULL;
+ 
+@@ -1514,6 +1516,7 @@
+     * which only contains the commands to run if the condition is true. For the
+     * time being, we apply predicates by zeroing out disabled indirect data */
+    struct kk_grid grid = kk_grid_1d(data->draw_count);
++   cmd->hoist_precomp = true;
+    for (uint32_t i = 0; i < data->predicate_count; i++) {
+       uint64_t addr = data->predicate_addr[i];
+       switch (data->predicate_op[i]) {
+@@ -1542,6 +1545,8 @@
+       }
+    }
+ 
++   cmd->hoist_precomp = false;
++
+    data->indirect_command.addr = patched.gpu;
+    data->indirect_command.stride = out_stride;
+    data->predicate_count = 0;
+@@ -2353,6 +2358,7 @@
+       return;
+ 
+    VK_FROM_HANDLE(kk_cmd_buffer, cmd, commandBuffer);
++   kk_cmd_buffer_device(cmd)->uses_indirect_count = true;
+ 
+    const struct vk_dynamic_graphics_state *dyn =
+       &cmd->vk.dynamic_graphics_state;
+@@ -2384,6 +2390,7 @@
+       return;
+ 
+    VK_FROM_HANDLE(kk_cmd_buffer, cmd, commandBuffer);
++   kk_cmd_buffer_device(cmd)->uses_indirect_count = true;
+ 
+    const struct vk_dynamic_graphics_state *dyn =
+       &cmd->vk.dynamic_graphics_state;
+diff -ruN a/src/kosmickrisp/vulkan/kk_device.h b/src/kosmickrisp/vulkan/kk_device.h
+--- a/src/kosmickrisp/vulkan/kk_device.h	2026-10-30 23:57:07
++++ b/src/kosmickrisp/vulkan/kk_device.h	2026-11-06 22:24:15
+@@ -96,6 +96,7 @@
+    struct kk_precompiled_cache precompiled_cache;
+ 
+    bool has_queue;
++   bool uses_indirect_count;
+    struct kk_queue queue;
+ 
+    struct vk_meta_device meta;
+diff -ruN a/src/kosmickrisp/vulkan/kk_queue.c b/src/kosmickrisp/vulkan/kk_queue.c
+--- a/src/kosmickrisp/vulkan/kk_queue.c	2026-10-30 23:57:07
++++ b/src/kosmickrisp/vulkan/kk_queue.c	2026-11-06 22:24:15
+@@ -98,8 +98,18 @@
+    mtl_commit_options *options = mtl_new_commit_options();
+    mtl_commit_options_add_feedback_handler(options, callback, user_data);
+ 
+-   mtl_command_queue_commit(queue->mtl_handle, &cmd->metal.cmd_buf, 1u,
+-                            options);
++   uint32_t max = util_dynarray_num_elements(&cmd->metal.segments,
++                                             mtl_command_buffer *) + 1u;
++   mtl_command_buffer **bufs = malloc(max * sizeof(*bufs));
++   uint32_t count = 0u;
++   util_dynarray_foreach(&cmd->metal.segments, mtl_command_buffer *, seg) {
++      if (*seg)
++         bufs[count++] = *seg;
++   }
++   bufs[count++] = cmd->metal.cmd_buf;
++
++   mtl_command_queue_commit(queue->mtl_handle, bufs, count, options);
++   free(bufs);
+    mtl_release(options);
+ }
+ 

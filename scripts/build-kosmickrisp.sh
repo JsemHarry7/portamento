@@ -41,7 +41,8 @@ mkdir -p "$(dirname "$TARBALL")" "$BUILD/src"
 rm -rf "$SRC"
 tar -xf "$TARBALL" -C "$BUILD/src"
 # patches/mesa-*.patch: wireframe polygon mode (fillModeNonSolid, required by BeamNG's
-# Vulkan renderer), and no crash for swap chains of more than 3 images
+# Vulkan renderer), draw-count passes kept out of render passes, and no crash for
+# swap chains of more than 3 images
 for p in "$ROOT"/patches/mesa-*.patch; do
     (cd "$SRC" && patch -p1 --forward < "$p")
 done

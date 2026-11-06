@@ -9,6 +9,9 @@
  *
  * dic:    `calls` x vkCmdDrawIndexedIndirectCount(maxDrawCount = max), the
  *         GPU-side count buffer says `count`
+ * order:  the count is written on the GPU (vkCmdFillBuffer) before each of two
+ *         render passes, `count` cells from cell 0, then count/2 from cell 512:
+ *         checks that a driver's work for the draws sees those writes
  * mdi:    `calls` x vkCmdDrawIndexedIndirect(drawCount = count)
  * direct: `calls` x `count` x vkCmdDrawIndexed
  *
@@ -96,6 +99,12 @@ int main(int argc, char **argv)
         else { fprintf(stderr, "unknown option %s\n", argv[i]); return 2; }
     }
     if (max > CELLS) max = CELLS;
+    int order = !strcmp(mode, "order");
+    if (order) {
+        max = 256;
+        calls = 1;
+        if (count > max) count = max;
+    }
     uint32_t drawn = !strcmp(mode, "dic") ? (count < max ? count : max) : count;
     if (drawn > CELLS) drawn = CELLS;
 
@@ -168,13 +177,16 @@ int main(int argc, char **argv)
     for (uint32_t i = 0; i < CELLS; i++)
         cmds[i] = (VkDrawIndexedIndirectCommand){ .indexCount = 6, .instanceCount = 1, .firstIndex = 0,
                                                   .vertexOffset = 4 * i, .firstInstance = i };
-    struct buffer count_buf = make_buffer(dev, sizeof(uint32_t), VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT);
-    *(uint32_t *)count_buf.map = count;
+    struct buffer count_buf = make_buffer(dev, sizeof(uint32_t),
+                                          VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT);
+    *(uint32_t *)count_buf.map = order ? 0 : count;
 
     /* pipeline */
     VkShaderModule vs = make_shader(dev, draw_vert, sizeof(draw_vert));
     VkShaderModule fs = make_shader(dev, draw_frag, sizeof(draw_frag));
-    VkPipelineLayoutCreateInfo layout_info = { VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
+    VkPushConstantRange push = { VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(int32_t) };
+    VkPipelineLayoutCreateInfo layout_info = { VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+                                               .pushConstantRangeCount = 1, .pPushConstantRanges = &push };
     VkPipelineLayout layout;
     CHECK(vkCreatePipelineLayout(dev, &layout_info, NULL, &layout));
     VkPipelineShaderStageCreateInfo stages[2] = {
@@ -235,22 +247,54 @@ int main(int argc, char **argv)
             .clearValue.color.float32 = { 0, 0, 0, 1 } };
         VkRenderingInfo render = { VK_STRUCTURE_TYPE_RENDERING_INFO, .renderArea = scissor,
                                    .layerCount = 1, .colorAttachmentCount = 1, .pColorAttachments = &color };
-        vkCmdBeginRendering(cmd, &render);
-        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
-        vkCmdBindIndexBuffer(cmd, index.buf, 0, VK_INDEX_TYPE_UINT16);
-        double r0 = now();
-        for (uint32_t c = 0; c < calls; c++) {
-            if (!strcmp(mode, "dic"))
-                vkCmdDrawIndexedIndirectCount(cmd, indirect.buf, 0, count_buf.buf, 0, max,
-                                              sizeof(VkDrawIndexedIndirectCommand));
-            else if (!strcmp(mode, "mdi"))
-                vkCmdDrawIndexedIndirect(cmd, indirect.buf, 0, drawn, sizeof(VkDrawIndexedIndirectCommand));
-            else
-                for (uint32_t i = 0; i < drawn; i++)  /* gl_DrawID is 0 here: cells come out red */
-                    vkCmdDrawIndexed(cmd, 6, 1, 0, 4 * i, i);
+        double r0 = now(), r1;
+        if (order) {
+            uint32_t counts[2] = { count, count / 2 }, firsts[2] = { 0, 512 };
+            for (int pass = 0; pass < 2; pass++) {
+                VkBufferMemoryBarrier written = { VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER,
+                    .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT, .dstAccessMask = VK_ACCESS_INDIRECT_COMMAND_READ_BIT,
+                    .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                    .buffer = count_buf.buf, .size = VK_WHOLE_SIZE };
+                VkBufferMemoryBarrier reread = written;
+                reread.srcAccessMask = VK_ACCESS_INDIRECT_COMMAND_READ_BIT;
+                reread.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+                if (pass)
+                    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                                         0, 0, NULL, 1, &reread, 0, NULL);
+                vkCmdFillBuffer(cmd, count_buf.buf, 0, sizeof(uint32_t), counts[pass]);
+                vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT,
+                                     0, 0, NULL, 1, &written, 0, NULL);
+                color.loadOp = pass ? VK_ATTACHMENT_LOAD_OP_LOAD : VK_ATTACHMENT_LOAD_OP_CLEAR;
+                vkCmdBeginRendering(cmd, &render);
+                vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
+                vkCmdBindIndexBuffer(cmd, index.buf, 0, VK_INDEX_TYPE_UINT16);
+                int32_t base = firsts[pass];
+                vkCmdPushConstants(cmd, layout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(base), &base);
+                vkCmdDrawIndexedIndirectCount(cmd, indirect.buf, firsts[pass] * sizeof(VkDrawIndexedIndirectCommand),
+                                              count_buf.buf, 0, max, sizeof(VkDrawIndexedIndirectCommand));
+                vkCmdEndRendering(cmd);
+            }
+            r1 = now();
+        } else {
+            vkCmdBeginRendering(cmd, &render);
+            vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
+            vkCmdBindIndexBuffer(cmd, index.buf, 0, VK_INDEX_TYPE_UINT16);
+            int32_t base = 0;
+            vkCmdPushConstants(cmd, layout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(base), &base);
+            r0 = now();
+            for (uint32_t c = 0; c < calls; c++) {
+                if (!strcmp(mode, "dic"))
+                    vkCmdDrawIndexedIndirectCount(cmd, indirect.buf, 0, count_buf.buf, 0, max,
+                                                  sizeof(VkDrawIndexedIndirectCommand));
+                else if (!strcmp(mode, "mdi"))
+                    vkCmdDrawIndexedIndirect(cmd, indirect.buf, 0, drawn, sizeof(VkDrawIndexedIndirectCommand));
+                else
+                    for (uint32_t i = 0; i < drawn; i++)  /* gl_DrawID is 0 here: cells come out red */
+                        vkCmdDrawIndexed(cmd, 6, 1, 0, 4 * i, i);
+            }
+            r1 = now();
+            vkCmdEndRendering(cmd);
         }
-        double r1 = now();
-        vkCmdEndRendering(cmd);
         VkImageMemoryBarrier to_copy = to_color;
         to_copy.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
         to_copy.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
@@ -285,15 +329,16 @@ int main(int argc, char **argv)
             green = p[2] < 16 && (p[0] > 240) != (p[1] > 240);
         int black = p[0] < 16 && p[1] < 16 && p[2] < 16;
         red += p[0] > 240;
-        if (i < drawn ? !green : !black) {
+        int expect = order ? (i < count || (i >= 512 && i < 512 + count / 2)) : i < drawn;
+        if (expect ? !green : !black) {
             if (bad < 5)
                 fprintf(stderr, "cell %u: %02x%02x%02x, expected %s\n", i, p[0], p[1], p[2],
-                        i < drawn ? "green" : "black");
+                        expect ? "green" : "black");
             bad++;
         }
     }
     uint32_t measured = frames > 1 ? frames - 1 : 1;
-    uint32_t encoded = calls * (!strcmp(mode, "dic") ? max : drawn);
+    uint32_t encoded = order ? 2 * max : calls * (!strcmp(mode, "dic") ? max : drawn);
     printf("record %.2f ms/frame (min %.2f), %.2f us per API draw (%u), frame %.2f ms\n",
            record_total / measured * 1e3, record_min * 1e3, record_total / measured * 1e6 / encoded,
            encoded, frame_total / measured * 1e3);
