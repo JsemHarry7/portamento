@@ -36,7 +36,7 @@ jobs:
     env:
       PORTA_NICE: ""  # full speed, the runner has nothing else to do
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Set up
         run: |
@@ -80,14 +80,14 @@ jobs:
 
       - name: Keep build logs
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: logs-${{ strategy.job-index }}
           path: |
             build/**/*.log
           if-no-files-found: ignore
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: runtime-${{ strategy.job-index }}
           path: ${{ env.DIST }}/*.tar.xz
@@ -98,8 +98,8 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
         with:
           pattern: runtime-*
           path: dist
