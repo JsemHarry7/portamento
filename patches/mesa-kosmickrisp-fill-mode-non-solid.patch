@@ -1,3 +1,5 @@
+Generated-by: LLM
+
 diff -ruN a/src/kosmickrisp/bridge/mtl_encoder.h b/src/kosmickrisp/bridge/mtl_encoder.h
 --- a/src/kosmickrisp/bridge/mtl_encoder.h	2026-10-30 23:57:07
 +++ b/src/kosmickrisp/bridge/mtl_encoder.h	2026-11-06 21:28:55
@@ -76,7 +78,7 @@ diff -ruN a/src/kosmickrisp/bridge/vk_to_mtl_map.c b/src/kosmickrisp/bridge/vk_t
 +   case VK_POLYGON_MODE_FILL:
 +      return MTL_TRIANGLE_FILL_MODE_FILL;
 +   case VK_POLYGON_MODE_LINE:
-+   case VK_POLYGON_MODE_POINT: // Metal has no point fill, lines come closest
++   case VK_POLYGON_MODE_POINT:
 +      return MTL_TRIANGLE_FILL_MODE_LINES;
 +   default:
 +      UNREACHABLE("Unsupported VkPolygonMode");

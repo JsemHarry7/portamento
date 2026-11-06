@@ -1,3 +1,5 @@
+Generated-by: LLM
+
 --- a/src/vulkan/wsi/wsi_common_metal_layer.m	2026-11-06 21:40:21
 +++ b/src/vulkan/wsi/wsi_common_metal_layer.m	2026-11-06 21:40:21
 @@ -5,6 +5,7 @@
@@ -8,15 +10,11 @@
  
  #include "vk_format.h"
  
-@@ -167,7 +168,11 @@
+@@ -167,7 +168,7 @@
        metal_layer.allowsNextDrawableTimeout = YES;
        metal_layer.framebufferOnly = framebuffer_only;
  
 -      metal_layer.maximumDrawableCount = image_count;
-+      /* CAMetalLayer only takes 2 or 3 drawables and throws (killing the app)
-+       * otherwise. Swapchains may have more images than that, e.g. games that
-+       * ask for one more than minImageCount: images get drawables round-robin
-+       * at acquire time, so the layer can have fewer of them. */
 +      metal_layer.maximumDrawableCount = CLAMP(image_count, 2, 3);
        metal_layer.drawableSize = (CGSize){.width = width, .height = height};
        metal_layer.opaque = enable_opaque;
