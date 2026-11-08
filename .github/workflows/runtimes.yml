@@ -27,7 +27,7 @@ jobs:
           - script: scripts/build-wine-mods.sh
             brew: bison autoconf mingw-w64
           - script: scripts/build-crossover-wine.sh
-            brew: bison mingw-w64 freetype gnutls
+            brew: bison mingw-w64 freetype gnutls sdl2
             needs-staging: true
           - script: scripts/build-kosmickrisp.sh
             brew: meson ninja pkgconf bison llvm spirv-llvm-translator spirv-tools glslang libclc

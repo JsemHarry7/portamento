@@ -9,7 +9,7 @@
 # into the runtime's lib/ from the staging Wine.
 #
 # Usage: scripts/build-crossover-wine.sh [crossover-version]    (default: 26.3.0)
-# Needs: Xcode CLT, Homebrew bison, freetype, gnutls and mingw-w64, and Gcenx's
+# Needs: Xcode CLT, Homebrew bison, freetype, gnutls, sdl2 and mingw-w64, and Gcenx's
 #        wine-staging (a finished `porta setup`, or PORTA_DEPS).
 # Env:   PORTA_HOME        data directory (default ~/Library/Application Support/Portamento)
 #        PORTA_BUILD       where the source and build trees go (default build/ in the checkout)
@@ -57,10 +57,13 @@ $NICE "$SRC/sources/wine/configure" --build=x86_64-apple-darwin --enable-archs=i
     CC="clang -arch x86_64" OBJC="clang -arch x86_64" LDFLAGS="-L$LIBS" \
     FREETYPE_CFLAGS="-I/opt/homebrew/include/freetype2" FREETYPE_LIBS="-L$LIBS -lfreetype" \
     GNUTLS_CFLAGS="-I/opt/homebrew/opt/gnutls/include -I/opt/homebrew/opt/nettle/include -I/opt/homebrew/opt/libtasn1/include -I/opt/homebrew/opt/p11-kit/include/p11-kit-1" \
-    GNUTLS_LIBS="-L$LIBS -lgnutls" > configure.log 2>&1
+    GNUTLS_LIBS="-L$LIBS -lgnutls" \
+    SDL2_CFLAGS="-I/opt/homebrew/include/SDL2" SDL2_LIBS="-L$LIBS -lSDL2" \
+    ac_cv_lib_soname_SDL2=libSDL2-2.0.0.dylib > configure.log 2>&1
 
 # The bundled libraries have bare install names, which configure turns into
-# garbage sonames; use the names they are shipped under.
+# garbage sonames (or none: SDL2, given above, which winebus needs for game
+# controllers); use the names they are shipped under.
 sed -i '' -E \
     -e 's|^#define SONAME_LIBFREETYPE .*|#define SONAME_LIBFREETYPE "libfreetype.6.dylib"|' \
     -e 's|^#define SONAME_LIBGNUTLS .*|#define SONAME_LIBGNUTLS "libgnutls.30.dylib"|' \
