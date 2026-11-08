@@ -352,13 +352,21 @@ STEAM_DIR = "drive_c/Program Files (x86)/Steam"
 STEAM_TOOL_APPS = {"228980"}  # Steamworks Common Redistributables
 
 
+def steam_installed(state_flags):
+    """Steam's StateFlags has bit 4 (fully installed) once the first download is done;
+    an installed game waiting for an update keeps it."""
+    return state_flags.isdigit() and int(state_flags) & 4 != 0
+
+
 def steam_games(name):
     """Games installed through the prefix's Steam, from its app manifests."""
     steam = prefix_dir(name) / STEAM_DIR
     games = []
     for acf in sorted((steam / "steamapps").glob("appmanifest_*.acf")):
-        fields = dict(re.findall(r'^\s*"(appid|name|installdir)"\s+"([^"]*)"', acf.read_text(errors="replace"), re.M))
+        fields = dict(re.findall(r'^\s*"(appid|name|installdir|StateFlags)"\s+"([^"]*)"', acf.read_text(errors="replace"), re.M))
         if fields.get("appid", "") in STEAM_TOOL_APPS:
+            continue
+        if not steam_installed(fields.get("StateFlags", "4")):  # still downloading
             continue
         folder = steam / "steamapps/common" / fields.get("installdir", "")
         games.append({"name": fields.get("name", acf.stem), "appid": fields.get("appid", ""), "kind": "steam",

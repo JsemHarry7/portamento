@@ -105,8 +105,40 @@ final class Library {
         inventory.prefixes.first { $0.name == name }
     }
 
+    /// The Steam games installed in the prefixes when the library was last loaded.
+    private var steamGames = ""
+
+    /// Reloads the library when a prefix's Steam finished installing a game or removed one.
+    func refreshSteamGames() async {
+        guard loaded else { return }
+        let found = await Self.installedSteamGames(in: steamDirs)
+        if found != steamGames { await reload() }
+    }
+
+    private var steamDirs: [URL] {
+        inventory.prefixes.map { $0.driveC.appending(path: "Program Files (x86)/Steam/steamapps") }
+    }
+
+    /// The app manifests of fully installed games (Steam writes one as a download
+    /// starts and sets bit 4 of its StateFlags once it's done), like porta lists them.
+    private nonisolated static func installedSteamGames(in dirs: [URL]) async -> String {
+        var found: [String] = []
+        for dir in dirs {
+            let names = (try? FileManager.default.contentsOfDirectory(atPath: dir.path)) ?? []
+            for name in names where name.hasPrefix("appmanifest_") && name.hasSuffix(".acf") {
+                guard let text = try? String(contentsOf: dir.appending(path: name), encoding: .utf8) else { continue }
+                let flags = text.split(separator: "\n").first { $0.contains("\"StateFlags\"") }
+                    .flatMap { $0.split(separator: "\"").dropFirst(3).first }
+                    .map { Int($0) ?? 0 } ?? 4
+                if flags & 4 != 0 { found.append(dir.path + "/" + name) }
+            }
+        }
+        return found.sorted().joined(separator: "\n")
+    }
+
     func reload() async {
         await perform { self.inventory = try await self.client.inventory() }
+        steamGames = await Self.installedSteamGames(in: steamDirs)
         loaded = true
         selftest = client.latestSelftest()
         if needsSetup { requirements = await PortaClient.missingRequirements() }

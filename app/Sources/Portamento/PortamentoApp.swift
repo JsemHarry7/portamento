@@ -22,9 +22,11 @@ struct PortamentoApp: App {
                     content.installing = InstallRequest(source: .installer(url))
                 }
                 .task {
-                    // Keep "Běží" badges current; ps is cheap.
+                    // Keep "Běží" badges current, and pick up games installed in
+                    // Steam; ps and a few small manifests are cheap.
                     while !Task.isCancelled {
                         await library.refreshRunning()
+                        await library.refreshSteamGames()
                         try? await Task.sleep(for: .seconds(3))
                     }
                 }
