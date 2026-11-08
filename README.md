@@ -10,7 +10,8 @@ in its own Wine prefix. It comes in two halves:
   all the work: downloading runtimes, creating prefixes, launching programs,
   running smoke tests.
 - **Portamento.app**: a native SwiftUI front end over `porta`, with a game
-  library, per-game launch modes and a status page. Its UI is in Czech for now.
+  library, per-game launch modes and settings, and a status page. In English,
+  and in Czech on a Mac set to Czech.
 
 > **Status: experimental.** It's a personal project that works on the
 > author's machine (M5 MacBook Pro, macOS 27). BeamNG.drive runs through Steam
@@ -87,7 +88,7 @@ the prefix, as DXMT only enables it for a whole process tree.
 
 | Wine (`--wine`) | | |
 |---|---|---|
-| `cx` (default) | Wine 11.0 built from CodeWeavers' CrossOver 26.3 sources | msync; the fastest here |
+| `cx` (default) | Wine 11.0 built from CodeWeavers' CrossOver 26.3 sources | msync; the fastest here; game controllers through SDL |
 | `staging` | Gcenx's Wine 11.21 Staging with Portamento's patched modules | |
 | `gptk` | Gcenx's CrossOver-based Wine 7.7 with Apple's D3DMetal 3.0 | D3D12 incl. DXR, but current Steam crashes on it |
 
