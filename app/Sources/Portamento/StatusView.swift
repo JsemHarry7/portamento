@@ -16,7 +16,7 @@ struct StatusView: View {
                         }
                     }
                 }
-                if let activity = library.activity, activity.title == "Příprava Portamenta" {
+                if let activity = library.activity, activity.title == Activity.setupTitle {
                     ActivityView(activity: activity)
                 }
             } header: {
@@ -52,7 +52,7 @@ struct StatusView: View {
                     if library.isTesting {
                         ProgressView().controlSize(.small)
                     }
-                    Button(library.isTesting ? "Testuje se…" : "Spustit testy") {
+                    Button(library.isTesting ? LocalizedStringKey("Testuje se…") : "Spustit testy") {
                         Task { await library.runSelftest() }
                     }
                     .disabled(library.isTesting)

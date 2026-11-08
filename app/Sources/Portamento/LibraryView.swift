@@ -75,16 +75,16 @@ struct LibraryView: View {
             .inspectorColumnWidth(min: 270, ideal: 310, max: 400)
             .toolbar {
                 Button("Podrobnosti", systemImage: "info.circle") { state.inspecting.toggle() }
-                    .help(state.inspecting ? "Skrýt podrobnosti" : "Zobrazit podrobnosti")
+                    .help(state.inspecting ? LocalizedStringKey("Skrýt podrobnosti") : "Zobrazit podrobnosti")
             }
         }
     }
 
     private var subtitle: String {
         let games = library.games.count
-        let noun = games == 1 ? "položka" : (2...4).contains(games) ? "položky" : "položek"
+        let items = Theme.count(games, "položka", "položky", "položek")
         let running = library.runningCount
-        return running > 0 ? "\(games) \(noun) · \(running) běží" : "\(games) \(noun)"
+        return running > 0 ? String(localized: "\(items) · \(running) běží") : items
     }
 }
 
@@ -97,7 +97,7 @@ struct RuntimeBanner: View {
     }
 
     var body: some View {
-        if let activity = library.activity, activity.title == "Příprava Portamenta" {
+        if let activity = library.activity, activity.title == Activity.setupTitle {
             ActivityView(activity: activity)
         } else if library.needsSetup {
             HStack(spacing: 10) {
@@ -436,7 +436,8 @@ struct GameInspector: View {
     /// DXMT draws D3D10/11 games, and its upscaling and frame pacing are set per game.
     private var showsPicture: Bool {
         let program = preferred.program
-        return preferred.prefix.gfx == "dxmt" && !program.exe.lowercased().hasSuffix("\\steam.exe")
+        let steamClient = program.kind == .default && program.exe.lowercased().hasSuffix("\\steam.exe")
+        return preferred.prefix.gfx == "dxmt" && !steamClient
             && (program.graphics.map { $0.isEmpty || !Set($0).isDisjoint(with: ["d3d11", "d3d10"]) } ?? true)
     }
 
@@ -467,7 +468,7 @@ struct GameInspector: View {
         }
     }
 
-    private func row(_ title: String, _ value: String) -> some View {
+    private func row(_ title: LocalizedStringKey, _ value: String) -> some View {
         GridRow {
             Text(title).foregroundStyle(.secondary).gridColumnAlignment(.trailing)
             Text(value).textSelection(.enabled)

@@ -71,7 +71,14 @@ enum Theme {
 
     /// "2 režimy", "5 režimů".
     static func modes(_ count: Int) -> String {
-        "\(count) \((2...4).contains(count) ? "režimy" : "režimů")"
+        Self.count(count, "režim", "režimy", "režimů")
+    }
+
+    /// "1 položka", "3 položky", "5 položek": Czech has three forms where English has
+    /// two, and its first is English's singular, so each form is its own string.
+    static func count(_ n: Int, _ one: String.LocalizationValue, _ few: String.LocalizationValue,
+                      _ many: String.LocalizationValue) -> String {
+        "\(n) \(String(localized: n == 1 ? one : (2...4).contains(n) ? few : many))"
     }
 
     /// A prefix's default program is named after its file ("steam"); give it a capital.

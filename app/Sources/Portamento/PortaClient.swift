@@ -125,7 +125,7 @@ struct PortaClient {
     private static func lastError(_ output: String) -> String {
         let lines = output.split(whereSeparator: { $0 == "\n" || $0 == "\r" })
             .map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
-        let line = lines.last(where: { $0.hasPrefix("porta: ") }) ?? lines.last ?? "porta skončil s chybou"
+        let line = lines.last(where: { $0.hasPrefix("porta: ") }) ?? lines.last ?? String(localized: "porta skončil s chybou")
         return line.replacingOccurrences(of: "porta: ", with: "")
     }
 
@@ -170,7 +170,7 @@ struct PortaClient {
     func install(into prefix: String, _ what: String, output: @escaping @Sendable (String) -> Void) async throws -> InstallReport {
         let printed = try await stream(["install", prefix, what, "--json"], output: output)
         guard let json = printed.split(separator: "\n").last(where: { $0.hasPrefix("{") }) else {
-            throw Failure(message: "porta install nic neohlásil")
+            throw Failure(message: String(localized: "porta install nic neohlásil"))
         }
         return try JSONDecoder().decode(InstallReport.self, from: Data(json.utf8))
     }

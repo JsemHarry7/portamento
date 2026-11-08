@@ -76,7 +76,7 @@ struct ContentView: View {
                 }
                 Section("Prefixy") {
                     ForEach(library.prefixes) { prefix in
-                        SidebarLabel(prefix.name, symbol: "shippingbox").tag(SidebarItem.prefix(prefix.name))
+                        SidebarLabel(verbatim: prefix.name, symbol: "shippingbox").tag(SidebarItem.prefix(prefix.name))
                     }
                 }
                 Section("Systém") {
@@ -127,17 +127,22 @@ struct ContentView: View {
 /// A sidebar row whose icon takes Portamento's accent; the sidebar ignores .tint
 /// and .listItemTint and would otherwise use the system accent.
 struct SidebarLabel: View {
-    var title: String
+    var title: Text
     var symbol: String
 
-    init(_ title: String, symbol: String) {
-        self.title = title
+    init(_ title: LocalizedStringKey, symbol: String) {
+        self.title = Text(title)
+        self.symbol = symbol
+    }
+
+    init(verbatim title: String, symbol: String) {
+        self.title = Text(verbatim: title)
         self.symbol = symbol
     }
 
     var body: some View {
         Label {
-            Text(title)
+            title
         } icon: {
             Image(systemName: symbol).foregroundStyle(Theme.accent)
         }

@@ -56,7 +56,7 @@ final class InstallForm: ObservableObject {
                 .split(whereSeparator: { !$0.isLetter && !$0.isNumber })
                 .filter { !["setup", "install", "installer", "x64", "x86", "win64", "win32", "windows"].contains($0) }
                 .filter { !$0.allSatisfy(\.isNumber) && !($0.first == "v" && $0.dropFirst().allSatisfy(\.isNumber)) }
-            name = words.isEmpty ? "hra" : words.prefix(3).joined(separator: "-")
+            name = words.isEmpty ? String(localized: "hra") : words.prefix(3).joined(separator: "-")
         }
     }
 }
@@ -87,7 +87,7 @@ struct InstallSheet: View {
                     if form.kind == .installer {
                         LabeledContent("Instalátor") {
                             HStack {
-                                Text(form.installer?.lastPathComponent ?? "Nevybráno")
+                                Text(form.installer?.lastPathComponent ?? String(localized: "Nevybráno"))
                                     .foregroundStyle(form.installer == nil ? .secondary : .primary)
                                     .lineLimit(1)
                                     .truncationMode(.middle)
@@ -97,7 +97,7 @@ struct InstallSheet: View {
                     }
                 } footer: {
                     Text(form.kind == .steam
-                         ? "Nainstaluje Steam pro Windows. Hry pak instaluješ ve Steamu a Portamento je samo najde."
+                         ? LocalizedStringKey("Nainstaluje Steam pro Windows. Hry pak instaluješ ve Steamu a Portamento je samo najde.")
                          : "Spustí instalátor hry pro Windows (.exe nebo .msi). Co vytvoří zástupce, přidá se do knihovny.")
                 }
 
@@ -151,7 +151,7 @@ struct InstallSheet: View {
         .onChange(of: form.wine) { form.gfx = form.wine == "gptk" ? "d3dmetal" : library.inventory.defaults.gfx }
         .toolbar {
             ToolbarItem(placement: .cancellationAction) {
-                Button(form.started && !running ? "Hotovo" : "Zrušit") {
+                Button(form.started && !running ? LocalizedStringKey("Hotovo") : "Zrušit") {
                     library.dismissActivity()
                     dismiss()
                 }

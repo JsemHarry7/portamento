@@ -15,6 +15,8 @@ BIN="$(swift build -c release --package-path "$ROOT/app" --show-bin-path)/Portam
 rm -rf "$APP" "$ICONSET"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN" "$APP/Contents/MacOS/Portamento"
+# English for everyone but Czech Macs; the Czech table is empty, as the code's texts are Czech
+cp -R "$ROOT/app/Localization/"*.lproj "$APP/Contents/Resources/"
 # porta rides along, so the app works without a checkout; with the build scripts,
 # patches and test sources for `porta setup --build` (the test programs themselves
 # come with the runtimes)
@@ -32,6 +34,8 @@ cat > "$APP/Contents/Info.plist" <<EOF
 <dict>
     <key>CFBundleExecutable</key><string>Portamento</string>
     <key>CFBundleIdentifier</key><string>local.portamento</string>
+    <key>CFBundleDevelopmentRegion</key><string>en</string>
+    <key>CFBundleLocalizations</key><array><string>en</string><string>cs</string></array>
     <key>CFBundleName</key><string>Portamento</string>
     <key>CFBundleDisplayName</key><string>Portamento</string>
     <key>CFBundleIconFile</key><string>AppIcon</string>

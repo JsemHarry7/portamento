@@ -11,13 +11,17 @@ struct Component: Identifiable {
     var id: String { name }
 
     static let all = [
-        Component(name: "Wine 11.0 z CrossOveru", detail: "Ze zdrojáků CodeWeavers, s msync. Výchozí Wine.", keys: ["wine-cx-"]),
-        Component(name: "Wine 11.21 Staging", detail: "Build od Gcenx s úpravami Portamenta.", keys: ["wine", "wine-11.", "wine-mods-"]),
-        Component(name: "DXMT", detail: "Direct3D 10 a 11 přes Metal.", keys: ["dxmt"]),
-        Component(name: "DXVK", detail: "Direct3D 10 a 11 přes Vulkan.", keys: ["dxvk"]),
-        Component(name: "D3DMetal 3.0", detail: "Direct3D 12 od Applu, s Wine 7.7 z Game Porting Toolkitu (Gcenx).", keys: ["gcenx-gptk"]),
-        Component(name: "KosmicKrisp", detail: "Vulkan na Metalu z Mesy.", keys: ["kosmickrisp-"]),
-        Component(name: "Testy kompatibility", detail: "Malé programy, kterými Portamento ověřuje grafiku.", keys: ["selftests"]),
+        Component(name: String(localized: "Wine 11.0 z CrossOveru"),
+                  detail: String(localized: "Ze zdrojáků CodeWeavers, s msync. Výchozí Wine."), keys: ["wine-cx-"]),
+        Component(name: "Wine 11.21 Staging",
+                  detail: String(localized: "Build od Gcenx s úpravami Portamenta."), keys: ["wine", "wine-11.", "wine-mods-"]),
+        Component(name: "DXMT", detail: String(localized: "Direct3D 10 a 11 přes Metal."), keys: ["dxmt"]),
+        Component(name: "DXVK", detail: String(localized: "Direct3D 10 a 11 přes Vulkan."), keys: ["dxvk"]),
+        Component(name: "D3DMetal 3.0",
+                  detail: String(localized: "Direct3D 12 od Applu, s Wine 7.7 z Game Porting Toolkitu (Gcenx)."), keys: ["gcenx-gptk"]),
+        Component(name: "KosmicKrisp", detail: String(localized: "Vulkan na Metalu z Mesy."), keys: ["kosmickrisp-"]),
+        Component(name: String(localized: "Testy kompatibility"),
+                  detail: String(localized: "Malé programy, kterými Portamento ověřuje grafiku."), keys: ["selftests"]),
     ]
 
     func isMissing(_ missing: [String]) -> Bool {
@@ -79,7 +83,7 @@ struct SetupView: View {
                 Button {
                     Task { await library.runSetup() }
                 } label: {
-                    Label(running ? "Připravuji…" : "Připravit Portamento", systemImage: "arrow.down.circle.fill")
+                    Label(running ? LocalizedStringKey("Připravuji…") : "Připravit Portamento", systemImage: "arrow.down.circle.fill")
                         .padding(.horizontal, 8)
                 }
                 .buttonStyle(.glassProminent)
@@ -137,7 +141,7 @@ struct RequirementsBox: View {
         .frame(maxWidth: 520)
     }
 
-    private func row(_ title: String, _ detail: String, @ViewBuilder action: () -> some View) -> some View {
+    private func row(_ title: LocalizedStringKey, _ detail: LocalizedStringKey, @ViewBuilder action: () -> some View) -> some View {
         HStack(alignment: .firstTextBaseline) {
             VStack(alignment: .leading, spacing: 2) {
                 Text(title).font(.headline)

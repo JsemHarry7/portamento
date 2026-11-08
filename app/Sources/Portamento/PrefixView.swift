@@ -93,11 +93,11 @@ struct PrefixView: View {
                 }
             }
         } message: {
-            Text("Prefix i všechno nainstalované v něm (\(prefix.programs.count == 1 ? "1 program" : "\(prefix.programs.count) programů")) se přesune do koše. Běžící programy se ukončí.")
+            Text("Prefix i všechno nainstalované v něm (\(Theme.count(prefix.programs.count, "program", "programy", "programů"))) se přesune do koše. Běžící programy se ukončí.")
         }
     }
 
-    private static let tools = [
+    private static let tools: [(title: LocalizedStringKey, symbol: String, command: String)] = [
         (title: "Nastavení Wine", symbol: "slider.horizontal.3", command: "winecfg"),
         (title: "Editor registru", symbol: "list.bullet.indent", command: "regedit"),
         (title: "Správce úloh", symbol: "list.bullet.rectangle", command: "taskmgr"),

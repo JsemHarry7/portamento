@@ -150,7 +150,7 @@ final class Library {
 
     /// Downloads and unpacks everything porta needs.
     func runSetup() async {
-        await track("Příprava Portamenta") { output in
+        await track(Activity.setupTitle) { output in
             try await self.client.setup(output: output)
         }
         await reload()
@@ -162,7 +162,7 @@ final class Library {
         var report: InstallReport?
         await track(source.title) { output in
             if self.prefix(named: name) == nil {
-                output("Vytvářím prefix \(name)")
+                output(String(localized: "Vytvářím prefix \(name)"))
                 try await self.client.create(name: name, wine: wine, gfx: gfx)
             }
             report = try await self.client.install(into: name, source.argument, output: output)
@@ -259,8 +259,9 @@ enum InstallSource: Hashable {
 
     var title: String {
         switch self {
-        case .steam: "Instalace Steamu"
-        case .installer(let url): "Instalace \(url?.lastPathComponent ?? "hry")"
+        case .steam: String(localized: "Instalace Steamu")
+        case .installer(let url):
+            if let name = url?.lastPathComponent { String(localized: "Instalace \(name)") } else { String(localized: "Instalace hry") }
         }
     }
 }
@@ -268,10 +269,13 @@ enum InstallSource: Hashable {
 /// A long porta command and what it has printed so far.
 @MainActor @Observable
 final class Activity {
+    /// The title of `porta setup` running, which the setup views look for.
+    static let setupTitle = String(localized: "Příprava Portamenta")
+
     let title: String
     private(set) var lines: [String] = []
     /// The newest step porta reported, for the headline.
-    private(set) var step = "Spouštím…"
+    private(set) var step = String(localized: "Spouštím…")
     /// 0...1 while curl reports a download, else nil.
     private(set) var progress: Double?
     private(set) var isRunning = true
@@ -299,21 +303,26 @@ final class Activity {
         isRunning = false
         self.error = error
         progress = nil
-        step = error == nil ? "Hotovo" : "Nepovedlo se"
+        step = error == nil ? String(localized: "Hotovo") : String(localized: "Nepovedlo se")
     }
 
-    /// porta's progress lines, in Czech.
+    /// porta's progress lines, in the app's language.
     private static func describe(_ line: String) -> String {
         let rules: [(String, String)] = [
-            ("downloading ", "Stahuji "), ("installed ", "Nainstalováno: "), ("building ", "Sestavuji "),
-            ("built runtime ", "Připraveno: "), ("updated ", "Aktualizováno: "), ("installing Rosetta", "Instaluji Rosettu"),
-            ("installing Steam", "Instaluji Steam"), ("running ", "Běží instalátor "), ("ready:", "Hotovo"),
+            ("downloading ", String(localized: "Stahuji ")), ("installed ", String(localized: "Nainstalováno: ")),
+            ("building ", String(localized: "Sestavuji ")), ("built runtime ", String(localized: "Připraveno: ")),
+            ("updated ", String(localized: "Aktualizováno: ")), ("installing Rosetta", String(localized: "Instaluji Rosettu")),
+            ("installing Steam", String(localized: "Instaluji Steam")), ("running ", String(localized: "Běží instalátor ")),
+            ("ready:", String(localized: "Hotovo")),
         ]
-        for (prefix, czech) in rules where line.hasPrefix(prefix) {
+        for (prefix, said) in rules where line.hasPrefix(prefix) {
             var rest = String(line.dropFirst(prefix.count))
             if prefix == "running " { rest = rest.components(separatedBy: ",").first ?? rest }
-            if prefix == "building " { rest = rest.replacingOccurrences(of: " from source, this takes a while", with: " ze zdrojáků (trvá to)") }
-            return czech + rest
+            if prefix == "building " {
+                rest = rest.replacingOccurrences(of: " from source, this takes a while",
+                                                 with: String(localized: " ze zdrojáků (trvá to)"))
+            }
+            return said + rest
         }
         return line
     }
