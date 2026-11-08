@@ -299,8 +299,10 @@ struct GameInspector: View {
                 header
                 VStack(alignment: .leading, spacing: 20) {
                     actions
+                    compatibilityNote
                     if game.variants.count > 1 { modes }
                     details
+                    if showsPicture { picture }
                     links
                 }
                 .padding(16)
@@ -403,8 +405,65 @@ struct GameInspector: View {
                 if let appid = preferred.program.appid {
                     row("Steam", "App \(appid)")
                 }
+                if let graphics = preferred.program.graphics, !graphics.isEmpty {
+                    row("Hra používá", graphics.map(Theme.graphicsName).joined(separator: ", "))
+                }
             }
             .font(.callout)
+        }
+    }
+
+    /// What the graphics the game uses mean for running it here.
+    @ViewBuilder
+    private var compatibilityNote: some View {
+        if let graphics = preferred.program.graphics, !graphics.isEmpty {
+            switch Compatibility(graphics: graphics, prefix: preferred.prefix) {
+            case .d3d12Only:
+                Note(symbol: "exclamationmark.triangle.fill", tint: .orange,
+                     text: "Hra umí jen DirectX 12, který tady zatím nefunguje, takže se nejspíš nespustí.")
+            case .prefersD3D12:
+                Note(symbol: "info.circle", tint: .secondary,
+                     text: "Hra umí DirectX 12 i starší verzi. Kdyby se nespustila, přepni ji v nastavení nebo ve spouštěči na DirectX 11 (ve Steamu často parametr -dx11).")
+            case .vulkanOnMoltenVK:
+                Note(symbol: "info.circle", tint: .secondary,
+                     text: "Hra používá Vulkan. Kdyby nefungovala, přepni v prefixu ovladač Vulkanu na KosmicKrisp.")
+            case .fine:
+                EmptyView()
+            }
+        }
+    }
+
+    /// DXMT draws D3D10/11 games, and its upscaling and frame pacing are set per game.
+    private var showsPicture: Bool {
+        let program = preferred.program
+        return preferred.prefix.gfx == "dxmt" && !program.exe.lowercased().hasSuffix("\\steam.exe")
+            && (program.graphics.map { $0.isEmpty || !Set($0).isDisjoint(with: ["d3d11", "d3d10"]) } ?? true)
+    }
+
+    private var picture: some View {
+        let settings = preferred.program.settings ?? GameSettings()
+        let item = preferred
+        return VStack(alignment: .leading, spacing: 8) {
+            Text("Obraz").font(.headline)
+            Picker("MetalFX", selection: Binding(
+                get: { settings.metalfx ?? 0 },
+                set: { factor in Task { await library.setGame(item, "metalfx", factor == 0 ? "off" : String(factor)) } })) {
+                Text("Vypnuto").tag(0.0)
+                Text("1,5×").tag(1.5)
+                Text("2×").tag(2.0)
+            }
+            Picker("Limit snímků", selection: Binding(
+                get: { settings.fps ?? 0 },
+                set: { fps in Task { await library.setGame(item, "fps", fps == 0 ? "off" : String(fps)) } })) {
+                Text("Bez limitu").tag(0)
+                Text("40 fps").tag(40)
+                Text("60 fps").tag(60)
+                Text("120 fps").tag(120)
+            }
+            Text("MetalFX zvětší obraz hry Applovým upscalingem: s nižším rozlišením nastaveným ve hře tak dostaneš víc snímků. S limitem řídí tempo snímků Metal, takže jdou rovnoměrněji; hodnota by měla dělit obnovovací frekvenci displeje. Změny platí od dalšího spuštění hry, zapnutí nebo vypnutí MetalFX až po restartu Steamu (prefixu).")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 
@@ -430,6 +489,25 @@ struct GameInspector: View {
         }
         .buttonStyle(.plain)
         .foregroundStyle(Theme.accent)
+    }
+}
+
+/// A short remark with an icon, such as a warning about the game.
+struct Note: View {
+    var symbol: String
+    var tint: Color
+    var text: LocalizedStringKey
+
+    var body: some View {
+        Label {
+            Text(text).fixedSize(horizontal: false, vertical: true)
+        } icon: {
+            Image(systemName: symbol).foregroundStyle(tint)
+        }
+        .font(.callout)
+        .padding(10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(tint.opacity(0.1), in: .rect(cornerRadius: 8))
     }
 }
 

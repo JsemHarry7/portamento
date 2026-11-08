@@ -49,6 +49,15 @@ enum Theme {
         }
     }
 
+    static func graphicsName(_ api: String) -> String {
+        switch api {
+        case "vulkan": "Vulkan"
+        case "opengl": "OpenGL"
+        case "ddraw": "DirectDraw"
+        default: api.uppercased()
+        }
+    }
+
     /// How a way of running a game reads in menus: "DXMT · Wine 11.0 (CrossOver) · steam-cx".
     static func variantName(_ item: LibraryItem) -> String {
         "\(gfxName(item.prefix.gfx)) · \(wineName(item.prefix.wine)) · \(item.prefix.name)"

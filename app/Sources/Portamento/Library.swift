@@ -213,6 +213,11 @@ final class Library {
         await reload()
     }
 
+    func setGame(_ item: LibraryItem, _ key: String, _ value: String) async {
+        await perform { try await self.client.setGame(item.prefix, item.program, key, value) }
+        await reload()
+    }
+
     func addProgram(to prefix: Prefix, name: String, exe: URL) async {
         await perform { try await self.client.addProgram(prefix, name: name, exe: exe.path) }
         await reload()

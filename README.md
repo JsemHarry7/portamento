@@ -52,6 +52,9 @@ porta run --hud steam 'C:\path\to\game.exe'      # with Apple's Metal performanc
 porta set steam gfx dxvk                         # switch the graphics backend
 porta set steam vulkan kosmickrisp               # switch the Vulkan driver
 porta override steam Game.exe d3dcompiler_47=native,builtin
+porta game steam Wreckfest                       # what the game draws with (D3D11, D3D12, Vulkan...) and its settings
+porta game steam Wreckfest metalfx 2             # DXMT: MetalFX enlarges the game's picture 2×
+porta game steam Wreckfest fps 60                # DXMT: Metal paces the frames (a divisor of the refresh rate)
 porta selftest                                   # D3D9/11/12, Vulkan, OpenGL on every combination
 porta list
 porta delete mygame                              # stop a prefix and move it to the Trash
@@ -62,6 +65,14 @@ game from its installer (also by opening an `.exe`/`.msi` with Portamento in
 Finder), and on first start it runs `porta setup` with a progress view.
 
 Options go before the prefix name (`porta run --hud steam`, not `porta run steam --hud`).
+
+`porta list` shows each prefix's games with the graphics APIs found in their
+executables (the DLLs they import, and the D3D11/D3D12/Vulkan DLLs they name for
+loading at run time). The app warns about games that only have D3D12, which no
+backend here runs well. `porta game` settings go into a DXMT config file in the
+prefix (`C:\portamento\dxmt.conf`) with a section per executable, so they apply
+per game even when Steam starts it; turning MetalFX on or off needs a restart of
+the prefix, as DXMT only enables it for a whole process tree.
 
 ### What a prefix can use
 

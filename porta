@@ -7,6 +7,7 @@ backend is built on demand as an APFS clone of that Wine (no extra disk
 space) with the backend's DLLs copied over Wine's own.
 """
 import argparse
+import contextlib
 import filecmp
 import hashlib
 import json
@@ -15,6 +16,7 @@ import os
 import re
 import shlex
 import shutil
+import struct
 import subprocess
 import sys
 import time
@@ -277,8 +279,45 @@ def wine_env(name, cfg, hud=False):
         env["VK_DRIVER_FILES"] = str(icd)
     if hud:
         env["MTL_HUD_ENABLED"] = "1"
+    if cfg.get("gfx") == "dxmt" and (prefix_dir(name) / "drive_c").exists():
+        env["DXMT_CONFIG_FILE"] = DXMT_CONF[1]
+        if write_dxmt_conf(name, cfg):
+            env["DXMT_METALFX_SPATIAL_SWAPCHAIN"] = "1"
     env.update(cfg.get("env", {}))
     return env
+
+
+# Per-game display settings ("games" in porta.json, set with `porta game`), which
+# DXMT reads from its config file when the game starts: a section per executable.
+DXMT_CONF = ("drive_c/portamento/dxmt.conf", r"C:\portamento\dxmt.conf")
+GAME_SETTINGS = {"metalfx": "d3d11.metalSpatialUpscaleFactor", "fps": "d3d11.preferredMaxFrameRate"}
+
+
+def game_key(program):
+    return program.get("appid") or program["name"]
+
+
+def write_dxmt_conf(name, cfg):
+    """Writes the prefix's DXMT config and returns whether a game in it uses MetalFX,
+    which DXMT only turns on for a whole process tree (DXMT_METALFX_SPATIAL_SWAPCHAIN)."""
+    tuned, metalfx, sections = cfg.get("games", {}), False, []
+    for program in programs(name, cfg):
+        settings = tuned.get(game_key(program))
+        if not settings:
+            continue
+        exes = graphics(name, program).get("exes") or ([] if program.get("folder") else [ntpath.basename(program["exe"])])
+        metalfx |= "metalfx" in settings
+        for exe in exes:
+            sections += [f"\n[{exe}]"] + [f"{GAME_SETTINGS[k]} = {v}" for k, v in settings.items() if k in GAME_SETTINGS]
+    lines = ["# Written by porta from the games in porta.json (porta game); changes here are overwritten."]
+    if metalfx:  # the other games in the prefix keep their resolution
+        lines.append("d3d11.metalSpatialUpscaleFactor = 1.0")
+    conf = prefix_dir(name) / DXMT_CONF[0]
+    text = "\n".join(lines + sections) + "\n"
+    if not conf.exists() or conf.read_text() != text:
+        conf.parent.mkdir(parents=True, exist_ok=True)
+        conf.write_text(text)
+    return metalfx
 
 
 def sync_prefix_dlls(name, rt, gfx):
@@ -392,6 +431,153 @@ def programs(name, cfg):
     return found + list(games.values())
 
 
+# What a game draws with, from its executables: the DLLs they import, and the ones
+# they name for loading at run time (engines that offer several APIs load them so).
+GRAPHICS_DLLS = {"d3d12": "d3d12", "d3d11": "d3d11", "d3d10": "d3d10", "d3d10_1": "d3d10", "d3d10core": "d3d10",
+                 "d3d9": "d3d9", "d3d8": "d3d8", "ddraw": "ddraw", "vulkan-1": "vulkan", "opengl32": "opengl"}
+GRAPHICS_ORDER = ["d3d12", "d3d11", "d3d10", "d3d9", "d3d8", "ddraw", "vulkan", "opengl"]
+GRAPHICS_LOADED = ["d3d12", "d3d11", "vulkan-1"]
+GRAPHICS_SCAN = 2  # bump when the scan changes, so cached results are redone
+SCAN_SKIP = re.compile(r"unins|crash|redist|setup|install|prereq|dxsetup|dotnet|directx|easyanticheat|"
+                       r"battleye|cefsharp|webhelper|report|updater", re.I)
+SCAN_EXES = 6  # a game's largest executables are the game itself
+SCAN_STRINGS_MAX = 512 << 20
+_graphics_cache = None
+
+
+def unix_path(name, winpath):
+    """A Windows path in the prefix (C:\\...) as a path on the Mac, through its drive links."""
+    m = re.match(r"([A-Za-z]):[\\/]?(.*)", winpath)
+    return prefix_dir(name) / "dosdevices" / f"{m[1].lower()}:" / m[2].replace("\\", "/") if m else None
+
+
+def pe_imports(path):
+    """The DLLs a PE file imports, delay-loaded ones too: lowercase, without .dll."""
+    with open(path, "rb") as f:
+        def at(off, n):
+            f.seek(off)
+            data = f.read(n)
+            if len(data) < n:
+                raise ValueError("truncated")
+            return data
+
+        if at(0, 2) != b"MZ":
+            return set()
+        pe, = struct.unpack("<I", at(0x3C, 4))
+        if at(pe, 4) != b"PE\0\0":
+            return set()
+        nsections, = struct.unpack("<H", at(pe + 6, 2))
+        optsize, = struct.unpack("<H", at(pe + 20, 2))
+        opt = pe + 24
+        magic, = struct.unpack("<H", at(opt, 2))
+        if magic == 0x20B:
+            base, = struct.unpack("<Q", at(opt + 24, 8))
+            dirs = opt + 112
+        elif magic == 0x10B:
+            base, = struct.unpack("<I", at(opt + 28, 4))
+            dirs = opt + 96
+        else:
+            return set()
+        ndirs, = struct.unpack("<I", at(dirs - 4, 4))
+        # (VirtualSize, VirtualAddress, SizeOfRawData, PointerToRawData)
+        sections = [struct.unpack("<IIII", at(opt + optsize + 40 * i + 8, 16)) for i in range(nsections)]
+
+        def offset(rva):
+            for vsize, va, rawsize, raw in sections:
+                if va <= rva < va + max(vsize, rawsize):
+                    return raw + rva - va
+            raise ValueError("RVA outside the sections")
+
+        def name_at(rva):
+            f.seek(offset(rva))
+            return f.read(256).split(b"\0", 1)[0].decode("latin-1").lower().removesuffix(".dll")
+
+        names = set()
+        # import directory (entries of 20 bytes, name RVA at 12), delay-load directory
+        # (32 bytes, name at 4, a VA instead of an RVA in old-style entries)
+        for index, size, name_off in ((1, 20, 12), (13, 32, 4)):
+            if index >= ndirs:
+                continue
+            rva, _ = struct.unpack("<II", at(dirs + 8 * index, 8))
+            if not rva:
+                continue
+            pos = offset(rva)
+            for _ in range(1024):
+                entry = at(pos, size)
+                name_rva, = struct.unpack_from("<I", entry, name_off)
+                if not name_rva:
+                    break
+                if index == 13 and not struct.unpack_from("<I", entry)[0] & 1:
+                    name_rva -= base
+                names.add(name_at(name_rva))
+                pos += size
+        return names
+
+
+def named_dlls(path):
+    """The graphics DLLs a file names in its data (ASCII or UTF-16), as for LoadLibrary.
+    Only the APIs games load that way; older ones are imported, and their names also
+    turn up in tables of DLLs that crash reporters and overlays look for."""
+    needles = {dll: ((dll + ".dll").encode(), (dll + ".dll").encode("utf-16-le")) for dll in GRAPHICS_LOADED}
+    found, tail = set(), b""
+    with open(path, "rb") as f:
+        while chunk := f.read(64 << 20):
+            data = tail + chunk.lower()
+            found |= {dll for dll, pair in needles.items() if dll not in found and any(n in data for n in pair)}
+            tail = data[-32:]
+    return found
+
+
+def game_exes(folder):
+    """A game's own executables: the largest .exe files in its folder, a few levels down."""
+    found, top = [], len(folder.parts)
+    for root, dirs, files in os.walk(folder):
+        dirs[:] = [] if len(Path(root).parts) - top >= 4 else [d for d in dirs if not SCAN_SKIP.search(d)]
+        for f in files:
+            if f.lower().endswith(".exe") and not SCAN_SKIP.search(f):
+                with contextlib.suppress(OSError):
+                    found.append((os.stat(os.path.join(root, f)).st_size, Path(root) / f))
+    return [p for _, p in sorted(found, reverse=True)[:SCAN_EXES]]
+
+
+def graphics(name, program):
+    """{"graphics": APIs the program uses, "exes": the executables looked at}, cached
+    until the game changes (its Steam manifest, or the exe itself). {} for Steam itself."""
+    global _graphics_cache
+    if program.get("folder"):
+        target = Path(program["folder"])
+        stamped = prefix_dir(name) / STEAM_DIR / f"steamapps/appmanifest_{program.get('appid')}.acf"
+    elif not program["exe"].lower().endswith("\\steam.exe"):
+        target = stamped = unix_path(name, program["exe"])
+    else:
+        return {}
+    if not target or not target.exists() or not stamped.exists():
+        return {}
+    st = stamped.stat()
+    stamp = [GRAPHICS_SCAN, st.st_mtime_ns, st.st_size]
+    cache = HOME / "cache/graphics.json"
+    if _graphics_cache is None:
+        try:
+            _graphics_cache = json.loads(cache.read_text())
+        except (OSError, ValueError):
+            _graphics_cache = {}
+    if (hit := _graphics_cache.get(str(target))) and hit.get("stamp") == stamp:
+        return {"graphics": hit["graphics"], "exes": hit["exes"]}
+    exes = game_exes(target) if target.is_dir() else [target]
+    apis = set()
+    for exe in exes:
+        with contextlib.suppress(OSError, ValueError, struct.error):
+            dlls = pe_imports(exe)
+            if exe.stat().st_size <= SCAN_STRINGS_MAX:
+                dlls |= named_dlls(exe)
+            apis |= {GRAPHICS_DLLS[d] for d in dlls if d in GRAPHICS_DLLS}
+    result = {"graphics": [a for a in GRAPHICS_ORDER if a in apis], "exes": [e.name for e in exes]}
+    _graphics_cache[str(target)] = dict(result, stamp=stamp)
+    cache.parent.mkdir(parents=True, exist_ok=True)
+    cache.write_text(json.dumps(_graphics_cache, indent=1) + "\n")
+    return result
+
+
 def log_path(name, exe):
     return LOGS / f"{name}-{ntpath.basename(exe).lower().removesuffix('.exe')}.log"
 
@@ -402,7 +588,10 @@ def cmd_list(args):
         print(json.dumps({
             "prefixes": [{"name": n, "wine": prefix_wine(c), "gfx": c["gfx"], "vulkan": c.get("vulkan", "moltenvk"),
                           "args": c.get("args", []), "env": c.get("env", {}), "path": str(prefix_dir(n)),
-                          "programs": [dict(p, log=str(log_path(n, p["exe"]))) for p in programs(n, c)]}
+                          "programs": [dict(p, log=str(log_path(n, p["exe"])),
+                                            graphics=graphics(n, p).get("graphics"),
+                                            settings=c.get("games", {}).get(game_key(p), {}))
+                                       for p in programs(n, c)]}
                          for n, c in prefixes],
             "wines": {w: wine_bin(p).exists() for w, p in WINES.items()},
             "backends": {g: not combo_error(DEFAULT_WINE, g) for g in BACKENDS},
@@ -413,6 +602,11 @@ def cmd_list(args):
         return
     for n, c in prefixes:
         print(f"{n:16} wine={prefix_wine(c):8} gfx={c['gfx']:8} {c.get('exe', '')}")
+        for p in programs(n, c):
+            if p["kind"] != "default":
+                apis = " ".join(graphics(n, p).get("graphics") or ["?"])
+                tuned = " ".join(f"{k}={v}" for k, v in c.get("games", {}).get(game_key(p), {}).items())
+                print(f"  {p['name']:30} {apis:24} {tuned}".rstrip())
     print("\nwines:", ", ".join(WINES), f"(default {DEFAULT_WINE})")
     print("backends:", ", ".join(BACKENDS), f"(default {DEFAULT_GFX})")
 
@@ -429,6 +623,54 @@ def cmd_program(args):
         progs.append(entry)
     cfg["programs"] = progs
     save(args.name, cfg)
+
+
+def cmd_game(args):
+    cfg = load(args.name)
+    wanted = args.game.lower()
+    found = [p for p in programs(args.name, cfg) if wanted in (p["name"].lower(), p.get("appid"))]
+    if not found:
+        die(f"no game '{args.game}' in {args.name}; its games: "
+            + ", ".join(p["name"] for p in programs(args.name, cfg)))
+    program, games = found[0], cfg.setdefault("games", {})
+    key = game_key(program)
+    settings = games.setdefault(key, {})
+    if not args.key:
+        info = graphics(args.name, program)
+        print(f"{program['name']}: graphics {' '.join(info.get('graphics', [])) or 'unknown'}"
+              f"; executables {', '.join(info.get('exes', [])) or '-'}")
+        print("settings:", ", ".join(f"{k} {v}" for k, v in settings.items()) or "none")
+        return
+    if args.value is None:
+        die(f"porta game {args.name} {args.game} {args.key} VALUE|off")
+    value = args.value.lower()
+    if value in ("off", "0"):
+        settings.pop(args.key, None)
+    elif args.key == "metalfx":
+        try:
+            factor = float(value)
+        except ValueError:
+            factor = 0
+        if not 1 < factor <= 2:
+            die("metalfx: how much MetalFX enlarges the game's picture, 1.1 to 2 (e.g. 1.5, 2), or off")
+        settings["metalfx"] = factor
+    elif args.key == "fps":
+        if not value.isdigit():
+            die("fps: a frame rate the display's refresh rate divides by (30, 60, 120), or off")
+        settings["fps"] = int(value)
+    before = "DXMT_METALFX_SPATIAL_SWAPCHAIN" in wine_env(args.name, load(args.name))
+    if not settings:
+        del games[key]
+    if not games:
+        del cfg["games"]
+    save(args.name, cfg)
+    after = "DXMT_METALFX_SPATIAL_SWAPCHAIN" in wine_env(args.name, cfg)  # rewrites the DXMT config
+    if cfg["gfx"] != "dxmt":
+        print(f"saved; it takes effect while {args.name} uses DXMT (porta set {args.name} gfx dxmt)")
+    elif before != after and server_running(args.name):
+        print(f"restart the prefix for MetalFX to turn {'on' if after else 'off'}: porta kill {args.name}")
+    else:
+        print("takes effect the next time the game starts")
 
 
 def cmd_set(args):
@@ -762,6 +1004,14 @@ def main():
     s.add_argument("value", nargs=argparse.REMAINDER,
                    help="may start with '-'; for env: KEY=VALUE (KEY= removes it)")
     s.set_defaults(fn=cmd_set)
+
+    g = sub.add_parser("game", help="a game's graphics and display settings (DXMT): MetalFX upscaling, frame rate",
+                       usage="porta game prefix game [metalfx FACTOR|off | fps N|off]")
+    g.add_argument("name", help="prefix")
+    g.add_argument("game", help="its name in the library, or Steam appid")
+    g.add_argument("key", nargs="?", choices=["metalfx", "fps"])
+    g.add_argument("value", nargs="?")
+    g.set_defaults(fn=cmd_game)
 
     r = sub.add_parser("run", help="run the prefix's program or the given exe",
                        usage="porta run [--gfx GFX] [--hud] [--fg] name [exe [args ...]]")

@@ -49,12 +49,46 @@ struct Program: Decodable, Identifiable, Hashable {
     var folder: String?
     /// Where `porta run` writes the program's output.
     var log: String?
+    /// The graphics APIs porta found in the game's executables ("d3d11", "vulkan", ...); nil if unknown.
+    var graphics: [String]?
+    var settings: GameSettings?
 
     enum Kind: String, Decodable {
         case `default`, steam, custom
     }
 
     var id: String { "\(kind.rawValue)/\(appid ?? name)" }
+}
+
+/// A game's display settings, which DXMT applies (`porta game`).
+struct GameSettings: Decodable, Hashable {
+    /// How much MetalFX enlarges the game's picture (1.5, 2); nil when off.
+    var metalfx: Double?
+    /// Frame rate Metal paces the game to; nil for no limit.
+    var fps: Int?
+}
+
+/// Whether the game is likely to run in a prefix, from the graphics APIs it uses.
+enum Compatibility {
+    /// Only D3D12, which works in no prefix but D3DMetal's.
+    case d3d12Only
+    /// D3D12 and an older API: the game may need switching to that one.
+    case prefersD3D12
+    /// Vulkan only, on MoltenVK, which lacks some of what games use.
+    case vulkanOnMoltenVK
+    case fine
+
+    init(graphics: [String], prefix: Prefix) {
+        let set = Set(graphics)
+        let older = !set.subtracting(["d3d12"]).isEmpty
+        if set.contains("d3d12") && prefix.gfx != "d3dmetal" {
+            self = older ? .prefersD3D12 : .d3d12Only
+        } else if set == ["vulkan"] && prefix.vulkan == "moltenvk" && prefix.wine != "gptk" {
+            self = .vulkanOnMoltenVK
+        } else {
+            self = .fine
+        }
+    }
 }
 
 /// A program as it sits in the library, with the prefix it runs in.

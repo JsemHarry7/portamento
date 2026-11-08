@@ -149,6 +149,11 @@ struct PortaClient {
         try await run(["set", prefix.name, key, value])
     }
 
+    /// A game's display setting (metalfx, fps); "off" removes it.
+    func setGame(_ prefix: Prefix, _ program: Program, _ key: String, _ value: String) async throws {
+        try await run(["game", prefix.name, program.appid ?? program.name, key, value])
+    }
+
     func addProgram(_ prefix: Prefix, name: String, exe: String) async throws {
         try await run(["program", "add", prefix.name, name, exe])
     }
