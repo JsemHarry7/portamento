@@ -1,7 +1,9 @@
 #!/bin/bash
 # Build the SwiftUI front end (app/) into build/Portamento.app, icon included.
 # Needs: Xcode CLT with the macOS 26+ SDK (Swift 6.2+). No Xcode required.
+# Env:   PORTA_VERSION  the app's version (default 0.1)
 set -euo pipefail
+VERSION="${PORTA_VERSION:-0.1}"
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 APP="$ROOT/build/Portamento.app"
@@ -34,7 +36,7 @@ cat > "$APP/Contents/Info.plist" <<EOF
     <key>CFBundleDisplayName</key><string>Portamento</string>
     <key>CFBundleIconFile</key><string>AppIcon</string>
     <key>CFBundlePackageType</key><string>APPL</string>
-    <key>CFBundleShortVersionString</key><string>0.1</string>
+    <key>CFBundleShortVersionString</key><string>$VERSION</string>
     <key>CFBundleVersion</key><string>1</string>
     <key>LSMinimumSystemVersion</key><string>26.0</string>
     <key>LSApplicationCategoryType</key><string>public.app-category.games</string>

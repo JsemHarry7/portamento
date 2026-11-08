@@ -1,0 +1,45 @@
+# Builds Portamento.app and attaches it to a draft release, to look over and
+# publish by hand. The app isn't signed with an Apple developer ID, so the
+# release notes say how to open it anyway.
+name: App
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: App version, e.g. 0.2 (the release is tagged app-0.2)
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: macos-26
+    env:
+      VERSION: ${{ inputs.version }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: Build
+        run: PORTA_VERSION="$VERSION" scripts/build-app.sh
+      - name: Package
+        run: ditto -c -k --keepParent build/Portamento.app "build/Portamento-$VERSION.zip"
+      - name: Draft release
+        run: |
+          cat > notes.md <<EOF
+          Portamento $VERSION for Apple Silicon Macs with macOS 26 or later.
+
+          1. Unzip \`Portamento-$VERSION.zip\` and move \`Portamento.app\` to Applications.
+          2. The app isn't signed with an Apple developer ID, so macOS refuses to open it
+             the first time. Open it once, then go to System Settings → Privacy & Security
+             and click **Open Anyway**. Or run:
+             \`xattr -dr com.apple.quarantine /Applications/Portamento.app\`
+          3. On first start the app downloads Wine and everything else it needs
+             (a few GB). It needs Python 3 from the Xcode Command Line Tools; the app
+             tells you if they are missing.
+
+          Runtimes: \`$(sed -n 's/^RUNTIME_RELEASE = "\(.*\)"/\1/p' porta)\`.
+          EOF
+          gh release create "app-$VERSION" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
+              --draft --title "Portamento $VERSION" --notes-file notes.md "build/Portamento-$VERSION.zip"

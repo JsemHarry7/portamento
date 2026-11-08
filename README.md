@@ -24,6 +24,15 @@ in its own Wine prefix. It comes in two halves:
 
 ## Install
 
+**The app:** download `Portamento-<version>.zip` from the [releases](../../releases)
+(the `app-…` ones), unzip it and move `Portamento.app` to Applications. It isn't
+signed with an Apple developer ID, so macOS refuses to open it the first time:
+open it once, then click **Open Anyway** in System Settings → Privacy & Security
+(or run `xattr -dr com.apple.quarantine /Applications/Portamento.app`). On first
+start it downloads what it needs, with `porta` bundled inside.
+
+**From source**, with the `porta` command line tool:
+
 ```sh
 git clone https://github.com/JsemHarry7/portamento.git
 cd portamento
@@ -132,7 +141,7 @@ so it takes no extra disk space. A few things needed patches; they are in
 | `patches/` | patches to Wine and Mesa |
 | `scripts/` | builds of the runtimes, the app, and release packaging |
 | `tests/` | Windows smoke tests for `porta selftest` (`tests/build.sh`, needs mingw-w64) |
-| `.github/workflows/` | CI, and the workflow that builds and publishes the runtimes |
+| `.github/workflows/` | CI, and the workflows that build the runtimes and the app for releases |
 
 ## Building the runtimes
 
