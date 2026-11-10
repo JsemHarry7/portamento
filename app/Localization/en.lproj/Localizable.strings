@@ -148,3 +148,5 @@
 "Testuje se…" = "Testing…";
 "Spustit testy" = "Run Tests";
 "Naposledy %@. Testy na chvíli otevírají okna, fps jsou pro jednoduchou scénu, ne pro hry." = "Last run %@. The tests open windows for a moment; the fps are for a simple scene, not for games.";
+"DLSS přes MetalFX" = "DLSS on MetalFX";
+"Hra pak nabídne v nastavení grafiky DLSS a místo karty NVIDIA ho spočítá Applův MetalFX: s nižším rozlišením vykreslování dostaneš víc snímků. Grafiku NVIDIA pak vidí všechny hry v prefixu. Zapnutí i vypnutí platí až po restartu Steamu (prefixu)." = "The game then offers DLSS in its graphics settings, and Apple's MetalFX does the work instead of an NVIDIA card: rendering at a lower resolution gets you more frames. Every game in the prefix then sees an NVIDIA GPU. Turning it on or off applies after restarting Steam (the prefix).";

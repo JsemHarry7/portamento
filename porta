@@ -97,7 +97,7 @@ PREBUILT = {  # name -> (script that builds it from source, version passed to it
 }
 
 # DLLs that must also sit in the prefix's system dirs (DXMT install guide).
-PREFIX_DLLS = {"dxmt": ["winemetal.dll"]}
+PREFIX_DLLS = {"dxmt": ["winemetal.dll"], "d3dmetal": ["nvngx.dll", "_nvngx.dll"]}
 ARCHS = ("x86_64-windows", "i386-windows", "x86_64-unix")
 
 STEAM_EXE = r"C:\Program Files (x86)\Steam\steam.exe"
@@ -250,13 +250,16 @@ def d3dmetal_runtime(base):
     unix, windows = lib / "wine/x86_64-unix", lib / "wine/x86_64-windows"
     modules = [so.name.removesuffix(".so") for so in sorted(unix.glob("*.so"))
                if so.resolve().name == shared.name or filecmp.cmp(so, shared, shallow=False)]
+    links = {module: module for module in modules}
+    if "nvngx-on-metalfx" in modules:  # DLSS on MetalFX, under the names games look for NVIDIA's NGX by
+        links |= {alias: "nvngx-on-metalfx" for alias in ("nvngx", "_nvngx") if alias not in modules}
     tmp = dest.with_name(dest.name + ".tmp")
     shutil.rmtree(tmp, ignore_errors=True)
     subprocess.run(["cp", "-cR", base, tmp], check=True)
     subprocess.run(["cp", "-cR", lib / "external", tmp / "lib/"], check=True)
-    for module in modules:
-        if (windows / f"{module}.dll").exists():
-            shutil.copy2(windows / f"{module}.dll", tmp / "lib/wine/x86_64-windows" / f"{module}.dll")
+    for module, src in links.items():
+        if (windows / f"{src}.dll").exists():
+            shutil.copy2(windows / f"{src}.dll", tmp / "lib/wine/x86_64-windows" / f"{module}.dll")
         link = tmp / "lib/wine/x86_64-unix" / f"{module}.so"
         link.unlink(missing_ok=True)
         link.symlink_to("../../external/libd3dshared.dylib")
@@ -332,14 +335,20 @@ def wine_env(name, cfg, hud=False):
         env["DXMT_CONFIG_FILE"] = DXMT_CONF[1]
         if write_dxmt_conf(name, cfg):
             env["DXMT_METALFX_SPATIAL_SWAPCHAIN"] = "1"
+    if cfg.get("gfx") == "d3dmetal" and any(s.get("dlss") for s in cfg.get("games", {}).values()):
+        env["D3DM_ENABLE_METALFX"] = "1"  # D3DMetal then shows an NVIDIA GPU and DLSS runs on MetalFX
     env.update(cfg.get("env", {}))
     return env
 
 
 # Per-game display settings ("games" in porta.json, set with `porta game`), which
 # DXMT reads from its config file when the game starts: a section per executable.
+# DLSS is D3DMetal's, and like DXMT's MetalFX it can only be switched for the prefix.
 DXMT_CONF = ("drive_c/portamento/dxmt.conf", r"C:\portamento\dxmt.conf")
 GAME_SETTINGS = {"metalfx": "d3d11.metalSpatialUpscaleFactor", "fps": "d3d11.preferredMaxFrameRate"}
+SETTING_GFX = {"metalfx": "dxmt", "fps": "dxmt", "dlss": "d3dmetal"}
+PREFIX_SWITCHES = {"DXMT_METALFX_SPATIAL_SWAPCHAIN": "MetalFX", "D3DM_ENABLE_METALFX": "DLSS"}
+NGX_KEY = r"HKLM\Software\NVIDIA Corporation\Global\NGXCore"
 
 
 def game_key(program):
@@ -377,6 +386,20 @@ def sync_prefix_dlls(name, rt, gfx):
             dst = prefix_dir(name) / "drive_c/windows" / sysdir / dll
             if src.exists() and not (dst.exists() and filecmp.cmp(src, dst, shallow=False)):
                 shutil.copy2(src, dst)
+
+
+def ngx_registry(name, rt, env):
+    """Points games' NGX at the nvngx.dll in system32, D3DMetal's DLSS on MetalFX,
+    whose signature isn't NVIDIA's."""
+    reg = prefix_dir(name) / "system.reg"
+    text = reg.read_text(errors="replace") if reg.exists() else ""
+    key = text.find("[Software\\\\NVIDIA Corporation\\\\Global\\\\NGXCore]")
+    if key >= 0 and '"EnableSignatureOverride"=dword:00000001' in text[key:text.find("\n\n", key)]:
+        return
+    for value, kind, data in (("FullPath", "REG_SZ", r"C:\Windows\System32"),
+                              ("EnableSignatureOverride", "REG_DWORD", "1")):
+        subprocess.run([wine_bin(rt), "reg", "add", NGX_KEY, "/v", value, "/t", kind, "/d", data, "/f"],
+                       env=env, capture_output=True)
 
 
 def cmd_setup(args):
@@ -692,7 +715,7 @@ def cmd_list(args):
         for p in programs(n, c):
             if p["kind"] != "default":
                 apis = " ".join(graphics(n, p).get("graphics") or ["?"])
-                tuned = " ".join(f"{k}={v}" for k, v in c.get("games", {}).get(game_key(p), {}).items())
+                tuned = " ".join(k if v is True else f"{k}={v}" for k, v in c.get("games", {}).get(game_key(p), {}).items())
                 print(f"  {p['name']:30} {apis:24} {tuned}".rstrip())
     print("\nwines:", ", ".join(WINES), f"(default {DEFAULT_WINE})")
     print("backends:", ", ".join(BACKENDS), f"(default {DEFAULT_GFX})")
@@ -726,7 +749,7 @@ def cmd_game(args):
         info = graphics(args.name, program)
         print(f"{program['name']}: graphics {' '.join(info.get('graphics', [])) or 'unknown'}"
               f"; executables {', '.join(info.get('exes', [])) or '-'}")
-        print("settings:", ", ".join(f"{k} {v}" for k, v in settings.items()) or "none")
+        print("settings:", ", ".join(f"{k} {'on' if v is True else v}" for k, v in settings.items()) or "none")
         return
     if args.value is None:
         die(f"porta game {args.name} {args.game} {args.key} VALUE|off")
@@ -745,17 +768,25 @@ def cmd_game(args):
         if not value.isdigit():
             die("fps: a frame rate the display's refresh rate divides by (30, 60, 120), or off")
         settings["fps"] = int(value)
-    before = "DXMT_METALFX_SPATIAL_SWAPCHAIN" in wine_env(args.name, load(args.name))
+    elif args.key == "dlss":
+        if value != "on":
+            die("dlss: on or off")
+        settings["dlss"] = True
+
+    def switches(cfg):
+        return {v for k, v in PREFIX_SWITCHES.items() if k in wine_env(args.name, cfg)}  # rewrites the DXMT config
+    before = switches(load(args.name))
     if not settings:
         del games[key]
     if not games:
         del cfg["games"]
     save(args.name, cfg)
-    after = "DXMT_METALFX_SPATIAL_SWAPCHAIN" in wine_env(args.name, cfg)  # rewrites the DXMT config
-    if cfg["gfx"] != "dxmt":
-        print(f"saved; it takes effect while {args.name} uses DXMT (porta set {args.name} gfx dxmt)")
+    after, gfx = switches(cfg), SETTING_GFX[args.key]
+    if cfg["gfx"] != gfx:
+        print(f"saved; it takes effect while {args.name} uses {gfx} (porta set {args.name} gfx {gfx})")
     elif before != after and server_running(args.name):
-        print(f"restart the prefix for MetalFX to turn {'on' if after else 'off'}: porta kill {args.name}")
+        changed = " and ".join(sorted(before ^ after))
+        print(f"restart the prefix for {changed} to turn {'on' if after > before else 'off'}: porta kill {args.name}")
     else:
         print("takes effect the next time the game starts")
 
@@ -798,6 +829,8 @@ def cmd_run(args):
     sync_prefix_dlls(args.name, rt, gfx)
     cmd = [str(wine_bin(rt)), exe, *(args.args if args.exe else cfg.get("args", []))]
     env = wine_env(args.name, cfg, args.hud)
+    if gfx == "d3dmetal":
+        ngx_registry(args.name, rt, env)
     if args.fg:
         os.execve(cmd[0], cmd, env)
     LOGS.mkdir(parents=True, exist_ok=True)
@@ -1092,11 +1125,11 @@ def main():
                    help="may start with '-'; for env: KEY=VALUE (KEY= removes it)")
     s.set_defaults(fn=cmd_set)
 
-    g = sub.add_parser("game", help="a game's graphics and display settings (DXMT): MetalFX upscaling, frame rate",
-                       usage="porta game prefix game [metalfx FACTOR|off | fps N|off]")
+    g = sub.add_parser("game", help="a game's graphics and display settings: MetalFX upscaling, frame rate (DXMT), DLSS (D3DMetal)",
+                       usage="porta game prefix game [metalfx FACTOR|off | fps N|off | dlss on|off]")
     g.add_argument("name", help="prefix")
     g.add_argument("game", help="its name in the library, or Steam appid")
-    g.add_argument("key", nargs="?", choices=["metalfx", "fps"])
+    g.add_argument("key", nargs="?", choices=list(SETTING_GFX))
     g.add_argument("value", nargs="?")
     g.set_defaults(fn=cmd_game)
 

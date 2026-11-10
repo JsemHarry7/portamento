@@ -68,12 +68,14 @@ struct Program: Decodable, Identifiable, Hashable {
     var id: String { "\(kind.rawValue)/\(appid ?? name)" }
 }
 
-/// A game's display settings, which DXMT applies (`porta game`).
+/// A game's display settings (`porta game`): MetalFX and the frame limit for DXMT, DLSS for D3DMetal.
 struct GameSettings: Decodable, Hashable {
     /// How much MetalFX enlarges the game's picture (1.5, 2); nil when off.
     var metalfx: Double?
     /// Frame rate Metal paces the game to; nil for no limit.
     var fps: Int?
+    /// DLSS, which D3DMetal runs on MetalFX.
+    var dlss: Bool?
 }
 
 /// Whether the game is likely to run in a prefix, from the graphics APIs it uses.

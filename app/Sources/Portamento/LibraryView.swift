@@ -433,15 +433,40 @@ struct GameInspector: View {
         }
     }
 
-    /// DXMT draws D3D10/11 games, and its upscaling and frame pacing are set per game.
+    /// DXMT draws D3D10/11 games, and its upscaling and frame pacing are set per game;
+    /// D3DMetal draws D3D11/12 ones and can run their DLSS.
     private var showsPicture: Bool {
         let program = preferred.program
         let steamClient = program.kind == .default && program.exe.lowercased().hasSuffix("\\steam.exe")
-        return preferred.prefix.gfx == "dxmt" && !steamClient
-            && (program.graphics.map { $0.isEmpty || !Set($0).isDisjoint(with: ["d3d11", "d3d10"]) } ?? true)
+        let apis: Set<String> = switch preferred.prefix.gfx {
+        case "dxmt": ["d3d11", "d3d10"]
+        case "d3dmetal": ["d3d12", "d3d11"]
+        default: []
+        }
+        return !apis.isEmpty && !steamClient
+            && (program.graphics.map { $0.isEmpty || !apis.isDisjoint(with: $0) } ?? true)
     }
 
+    @ViewBuilder
     private var picture: some View {
+        if preferred.prefix.gfx == "d3dmetal" { dlss } else { dxmtPicture }
+    }
+
+    private var dlss: some View {
+        let item = preferred
+        return VStack(alignment: .leading, spacing: 8) {
+            Text("Obraz").font(.headline)
+            Toggle("DLSS přes MetalFX", isOn: Binding(
+                get: { item.program.settings?.dlss ?? false },
+                set: { on in Task { await library.setGame(item, "dlss", on ? "on" : "off") } }))
+            Text("Hra pak nabídne v nastavení grafiky DLSS a místo karty NVIDIA ho spočítá Applův MetalFX: s nižším rozlišením vykreslování dostaneš víc snímků. Grafiku NVIDIA pak vidí všechny hry v prefixu. Zapnutí i vypnutí platí až po restartu Steamu (prefixu).")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private var dxmtPicture: some View {
         let settings = preferred.program.settings ?? GameSettings()
         let item = preferred
         return VStack(alignment: .leading, spacing: 8) {

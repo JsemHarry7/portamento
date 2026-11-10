@@ -66,6 +66,7 @@ porta override steam Game.exe d3dcompiler_47=native,builtin
 porta game steam Wreckfest                       # what the game draws with (D3D11, D3D12, Vulkan...) and its settings
 porta game steam Wreckfest metalfx 2             # DXMT: MetalFX enlarges the game's picture 2×
 porta game steam Wreckfest fps 60                # DXMT: Metal paces the frames (a divisor of the refresh rate)
+porta game steam-d3d12 BeamNG.drive dlss on      # D3DMetal: the game's DLSS runs on MetalFX
 porta selftest                                   # D3D9/11/12, Vulkan, OpenGL on every combination
 porta list
 porta delete mygame                              # stop a prefix and move it to the Trash
@@ -79,11 +80,12 @@ Options go before the prefix name (`porta run --hud steam`, not `porta run steam
 
 `porta list` shows each prefix's games with the graphics APIs found in their
 executables (the DLLs they import, and the D3D11/D3D12/Vulkan DLLs they name for
-loading at run time). The app warns about games that only have D3D12, which no
-backend here runs well. `porta game` settings go into a DXMT config file in the
+loading at run time). The app warns about games that only have D3D12, which
+only D3DMetal runs. `porta game` settings go into a DXMT config file in the
 prefix (`C:\portamento\dxmt.conf`) with a section per executable, so they apply
 per game even when Steam starts it; turning MetalFX on or off needs a restart of
-the prefix, as DXMT only enables it for a whole process tree.
+the prefix, as DXMT only enables it for a whole process tree. DLSS is the same:
+D3DMetal turns it on for the prefix, and then every game in it sees an NVIDIA GPU.
 
 ### What a prefix can use
 
@@ -178,6 +180,13 @@ unix modules (`d3d12.so`, `dxgi.so`, ...) are all the same library,
 `libd3dshared.dylib`, and porta links them to one copy of it: as separate
 copies, each is loaded with its own state, and D3DMetal crashes on the first
 call that crosses from one to another.
+
+D3DMetal also runs DLSS on MetalFX (`nvngx-on-metalfx`). Games load NVIDIA's NGX
+as `nvngx.dll`/`_nvngx.dll` from the folder in
+`HKLM\Software\NVIDIA Corporation\Global\NGXCore\FullPath`, so porta puts it
+there under those names, in `system32`, and turns off NGX's check for NVIDIA's
+signature (`EnableSignatureOverride`). `porta game ... dlss on` then sets
+`D3DM_ENABLE_METALFX`, which makes D3DMetal show an NVIDIA GPU.
 
 ## License
 
