@@ -18,7 +18,7 @@ struct Component: Identifiable {
         Component(name: "DXMT", detail: String(localized: "Direct3D 10 a 11 přes Metal."), keys: ["dxmt"]),
         Component(name: "DXVK", detail: String(localized: "Direct3D 10 a 11 přes Vulkan."), keys: ["dxvk"]),
         Component(name: "D3DMetal 3.0",
-                  detail: String(localized: "Direct3D 12 od Applu, s Wine 7.7 z Game Porting Toolkitu (Gcenx)."), keys: ["gcenx-gptk"]),
+                  detail: String(localized: "Direct3D 12 a 11 od Applu, z Game Porting Toolkitu od Gcenxe."), keys: ["gcenx-gptk"]),
         Component(name: "KosmicKrisp", detail: String(localized: "Vulkan na Metalu z Mesy."), keys: ["kosmickrisp-"]),
         Component(name: String(localized: "Testy kompatibility"),
                   detail: String(localized: "Malé programy, kterými Portamento ověřuje grafiku."), keys: ["selftests"]),

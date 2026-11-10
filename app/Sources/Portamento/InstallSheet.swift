@@ -122,8 +122,7 @@ struct InstallSheet: View {
                                 }
                             }
                             Picker("Grafická vrstva", selection: $form.gfx) {
-                                ForEach(library.inventory.backends.keys.sorted()
-                                    .filter { ($0 == "d3dmetal") == (form.wine == "gptk") }, id: \.self) {
+                                ForEach(library.inventory.backends(for: form.wine), id: \.self) {
                                     Text(Theme.gfxName($0)).tag($0)
                                 }
                             }

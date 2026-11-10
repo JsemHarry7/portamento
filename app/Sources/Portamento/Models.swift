@@ -8,6 +8,8 @@ struct Inventory: Decodable {
     var vulkan: [String: Bool]
     var defaults: Defaults
     var setup: Setup
+    /// Wine -> the backends that work with it (older porta: worked out in `backends(for:)`).
+    var combos: [String: [String]]?
 
     struct Defaults: Decodable {
         var wine: String
@@ -20,7 +22,13 @@ struct Inventory: Decodable {
     }
 
     static let empty = Inventory(prefixes: [], wines: [:], backends: [:], vulkan: [:],
-                                 defaults: .init(wine: "cx", gfx: "dxmt"), setup: .init(missing: []))
+                                 defaults: .init(wine: "cx", gfx: "dxmt"), setup: .init(missing: []), combos: nil)
+
+    /// The graphics backends a prefix on this Wine can use.
+    func backends(for wine: String) -> [String] {
+        if let combos { return combos[wine] ?? [] }
+        return backends.keys.sorted().filter { ($0 == "d3dmetal") == (wine == "gptk") }
+    }
 }
 
 struct Prefix: Decodable, Identifiable, Hashable {
@@ -70,7 +78,7 @@ struct GameSettings: Decodable, Hashable {
 
 /// Whether the game is likely to run in a prefix, from the graphics APIs it uses.
 enum Compatibility {
-    /// Only D3D12, which works in no prefix but D3DMetal's.
+    /// Only D3D12, which only D3DMetal runs well.
     case d3d12Only
     /// D3D12 and an older API: the game may need switching to that one.
     case prefersD3D12

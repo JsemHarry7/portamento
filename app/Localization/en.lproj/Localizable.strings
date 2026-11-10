@@ -32,7 +32,7 @@
 "Jak běží" = "How it runs";
 "Grafika" = "Graphics";
 "Hra používá" = "Game uses";
-"Hra umí jen DirectX 12, který tady zatím nefunguje, takže se nejspíš nespustí." = "This game only has DirectX 12, which doesn't work here yet, so it most likely won't start.";
+"Hra umí jen DirectX 12. Ten tu zvládá jen D3DMetal: přepni prefix na grafiku D3DMetal, jinak se hra nejspíš nespustí." = "This game only has DirectX 12, which only D3DMetal handles here: switch the prefix to D3DMetal graphics, or it most likely won't start.";
 "Hra umí DirectX 12 i starší verzi. Kdyby se nespustila, přepni ji v nastavení nebo ve spouštěči na DirectX 11 (ve Steamu často parametr -dx11)." = "This game has DirectX 12 and an older version. If it won't start, switch it to DirectX 11 in its settings or launcher (on Steam often the launch option -dx11).";
 "Hra používá Vulkan. Kdyby nefungovala, přepni v prefixu ovladač Vulkanu na KosmicKrisp." = "This game uses Vulkan. If it doesn't work, switch the prefix's Vulkan driver to KosmicKrisp.";
 "Obraz" = "Picture";
@@ -121,7 +121,7 @@
 "Build od Gcenx s úpravami Portamenta." = "Gcenx's build, with Portamento's changes.";
 "Direct3D 10 a 11 přes Metal." = "Direct3D 10 and 11 on Metal.";
 "Direct3D 10 a 11 přes Vulkan." = "Direct3D 10 and 11 on Vulkan.";
-"Direct3D 12 od Applu, s Wine 7.7 z Game Porting Toolkitu (Gcenx)." = "Apple's Direct3D 12, with Wine 7.7 from the Game Porting Toolkit (Gcenx).";
+"Direct3D 12 a 11 od Applu, z Game Porting Toolkitu od Gcenxe." = "Apple's Direct3D 12 and 11, from Gcenx's Game Porting Toolkit build.";
 "Vulkan na Metalu z Mesy." = "Vulkan on Metal, from Mesa.";
 "Testy kompatibility" = "Compatibility tests";
 "Malé programy, kterými Portamento ověřuje grafiku." = "Small programs Portamento checks the graphics with.";

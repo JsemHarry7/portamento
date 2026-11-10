@@ -13,6 +13,7 @@ import hashlib
 import json
 import ntpath
 import os
+import plistlib
 import re
 import shlex
 import shutil
@@ -69,10 +70,10 @@ BACKENDS = {
     "dxmt": ("dxmt", {"winemetal.dll", "winemetal.so", "d3d11.dll", "dxgi.dll", "d3d10core.dll"}),
     "dxvk": ("dxvk", {"d3d11.dll", "d3d10core.dll"}),
     "wined3d": None,
-    "d3dmetal": None,
+    "d3dmetal": None,  # the gptk Wine's own; on cx, built by d3dmetal_runtime()
 }
-# backends that only exist in one Wine
-BACKEND_WINE = {"d3dmetal": "gptk"}
+BACKEND_WINES = {"d3dmetal": ("cx", "gptk")}  # backends that only work on some Wines
+ONLY_BACKENDS = {"gptk": ("d3dmetal",)}      # Wines that only work with some backends
 DEFAULT_GFX = "dxmt"
 
 KOSMICKRISP_VERSION = "26.3.0-rc3"  # 26.2 leaks swap chain drawables (games stall at a few fps)
@@ -211,11 +212,57 @@ def wine_bin(rt):
 
 
 def combo_error(wine, gfx):
-    if BACKEND_WINE.get(gfx, wine) != wine:
-        return f"{gfx} needs the {BACKEND_WINE[gfx]} Wine, this prefix uses {wine} (porta create <name> --gfx {gfx})"
-    if wine in BACKEND_WINE.values() and gfx not in BACKEND_WINE:
-        return f"the {wine} Wine only supports {', '.join(g for g, w in BACKEND_WINE.items() if w == wine)}"
+    if gfx in BACKEND_WINES and wine not in BACKEND_WINES[gfx]:
+        return (f"{gfx} needs the {' or '.join(BACKEND_WINES[gfx])} Wine, this prefix uses {wine} "
+                f"(porta create <name> --wine {BACKEND_WINES[gfx][0]} --gfx {gfx})")
+    if wine in ONLY_BACKENDS and gfx not in ONLY_BACKENDS[wine]:
+        return f"the {wine} Wine only supports {', '.join(ONLY_BACKENDS[wine])}"
+    if gfx == "d3dmetal" and wine != "gptk" and not d3dmetal_sources():
+        return "no D3DMetal yet: porta setup brings one (with Gcenx's GPTK Wine), or porta import-gptk"
     return None
+
+
+# D3DMetal, Apple's Direct3D 12/11 on Metal, comes with Gcenx's GPTK Wine or from a Game
+# Porting Toolkit the user imports (Apple's license doesn't let porta download it).
+# Its unix modules (d3d12.so, dxgi.so, ...) are all one library, libd3dshared, which
+# must be loaded once: they are links to it, as copies would each get their own
+# globals and D3DMetal calls through a table that only one of them filled in.
+def d3dmetal_sources():
+    """(name, its lib/ with external/ and wine/) of each D3DMetal on disk: imported
+    Game Porting Toolkits, newest first, then the one in Gcenx's GPTK Wine."""
+    imported = sorted((d for d in RUNTIMES.glob("gptk-*") if (d / "external/libd3dshared.dylib").exists()),
+                      key=lambda d: [int(n) for n in re.findall(r"\d+", d.name)], reverse=True)
+    found = [(d.name, d) for d in imported]
+    gcenx = WINES["gptk"] / "lib"
+    if (gcenx / "external/libd3dshared.dylib").exists():
+        found.append((ARCHIVES["gcenx-gptk"][1].name, gcenx))
+    return found
+
+
+def d3dmetal_runtime(base):
+    """The base Wine with the newest D3DMetal: its Windows modules over Wine's, its
+    unix modules linked to libd3dshared in lib/external/."""
+    name, lib = d3dmetal_sources()[0]
+    dest = RUNTIMES / f"{base.name}+d3dmetal-{name}"
+    if dest.exists():
+        return dest
+    shared = lib / "external/libd3dshared.dylib"
+    unix, windows = lib / "wine/x86_64-unix", lib / "wine/x86_64-windows"
+    modules = [so.name.removesuffix(".so") for so in sorted(unix.glob("*.so"))
+               if so.resolve().name == shared.name or filecmp.cmp(so, shared, shallow=False)]
+    tmp = dest.with_name(dest.name + ".tmp")
+    shutil.rmtree(tmp, ignore_errors=True)
+    subprocess.run(["cp", "-cR", base, tmp], check=True)
+    subprocess.run(["cp", "-cR", lib / "external", tmp / "lib/"], check=True)
+    for module in modules:
+        if (windows / f"{module}.dll").exists():
+            shutil.copy2(windows / f"{module}.dll", tmp / "lib/wine/x86_64-windows" / f"{module}.dll")
+        link = tmp / "lib/wine/x86_64-unix" / f"{module}.so"
+        link.unlink(missing_ok=True)
+        link.symlink_to("../../external/libd3dshared.dylib")
+    tmp.rename(dest)
+    print(f"built runtime {dest.name} ({len(modules)} D3DMetal modules)")
+    return dest
 
 
 def check_combo(wine, gfx):
@@ -228,6 +275,8 @@ def runtime(wine, gfx):
     base = WINES[wine]
     if not wine_bin(base).exists():
         die(f"{wine} Wine missing, run: porta setup")
+    if gfx == "d3dmetal" and wine != "gptk":
+        return d3dmetal_runtime(base)
     if BACKENDS[gfx] is None:
         return base
     dest = RUNTIMES / f"{base.name}+{gfx}"
@@ -349,7 +398,7 @@ def cmd_setup(args):
             build_from_source(name)
     link_cx_libraries()
     for gfx in BACKENDS:
-        if gfx in BACKEND_WINE:  # our patches are for the staging Wine only
+        if combo_error("staging", gfx):  # our patches are for the staging Wine only
             continue
         rt = runtime("staging", gfx)
         for mod in MODS:
@@ -369,11 +418,47 @@ def server_running(name):
     return (Path(f"/tmp/.wine-{os.getuid()}") / f"server-{st.st_dev:x}-{st.st_ino:x}" / "socket").exists()
 
 
+def cmd_import_gptk(args):
+    """Copies D3DMetal out of Apple's Game Porting Toolkit (its .dmg, or the mounted
+    volume) into runtimes/gptk-<version>, for d3dmetal prefixes on the cx Wine."""
+    src, mounted = Path(args.path).expanduser(), None
+    if src.suffix == ".dmg":
+        out = subprocess.run(["hdiutil", "attach", "-nobrowse", "-readonly", "-plist", src],
+                             capture_output=True, check=True).stdout
+        mounted = next(e["mount-point"] for e in plistlib.loads(out)["system-entities"] if "mount-point" in e)
+        src = Path(mounted)
+    try:
+        lib = next((d for d in (src / "redist/lib", src / "lib", src)
+                    if (d / "external/libd3dshared.dylib").exists() and (d / "wine/x86_64-unix").exists()), None)
+        if not lib:
+            die(f"no D3DMetal in {src} (expected redist/lib/external/libd3dshared.dylib)")
+        label = (lib / "VERSION").read_text().strip() if (lib / "VERSION").exists() else src.name
+        m = re.search(r"(\d+(?:\.\d+)+)(?:\s*beta\s*(\d+))?", label, re.I)
+        version = (m[1] + (f"b{m[2]}" if m[2] else "")) if m else "unknown"
+        dest = RUNTIMES / f"gptk-{version}"
+        if dest.exists():
+            print(f"{dest.name} is already imported")
+            return
+        tmp = dest.with_name(dest.name + ".tmp")
+        shutil.rmtree(tmp, ignore_errors=True)
+        tmp.mkdir(parents=True)
+        for part in ("external", "wine"):
+            subprocess.run(["cp", "-R", lib / part, tmp / part], check=True)
+        (tmp / "VERSION").write_text(label + "\n")
+        tmp.rename(dest)
+        print(f"imported D3DMetal from {label} as {dest.name}; "
+              "d3dmetal prefixes on the cx Wine use it from their next start (porta kill <prefix>)")
+    finally:
+        if mounted:
+            subprocess.run(["hdiutil", "detach", "-quiet", mounted])
+
+
 def cmd_create(args):
     pfx = prefix_dir(args.name)
     if (pfx / "porta.json").exists():
         die(f"prefix '{args.name}' already exists")
-    wine = args.wine or BACKEND_WINE.get(args.gfx, DEFAULT_WINE)
+    wine = args.wine or (DEFAULT_WINE if DEFAULT_WINE in BACKEND_WINES.get(args.gfx, [DEFAULT_WINE])
+                         else BACKEND_WINES[args.gfx][0])
     rt = runtime(wine, args.gfx)
     pfx.mkdir(parents=True, exist_ok=True)
     cfg = {"wine": wine, "gfx": args.gfx, "exe": args.exe or "", "args": [], "env": {}}
@@ -595,6 +680,8 @@ def cmd_list(args):
                          for n, c in prefixes],
             "wines": {w: wine_bin(p).exists() for w, p in WINES.items()},
             "backends": {g: not combo_error(DEFAULT_WINE, g) for g in BACKENDS},
+            "combos": {w: [g for g in BACKENDS if not combo_error(w, g)] for w in WINES},
+            "d3dmetal": [n for n, _ in d3dmetal_sources()],
             "vulkan": {v: icd is None or icd.exists() for v, icd in VULKAN_DRIVERS.items()},
             "defaults": {"wine": DEFAULT_WINE, "gfx": DEFAULT_GFX},
             "setup": {"missing": setup_missing()},
@@ -1028,6 +1115,10 @@ def main():
     i.add_argument("what", help="'steam', or the path of an installer (.exe or .msi) on the Mac")
     i.add_argument("--json", action="store_true", help="report what was added as JSON")
     i.set_defaults(fn=cmd_install)
+
+    ig = sub.add_parser("import-gptk", help="take D3DMetal from Apple's Game Porting Toolkit (.dmg or mounted volume)")
+    ig.add_argument("path")
+    ig.set_defaults(fn=cmd_import_gptk)
 
     d = sub.add_parser("delete", help="stop a prefix and move it to the Trash")
     d.add_argument("name")

@@ -13,10 +13,7 @@ struct PrefixView: View {
     @StateObject private var state = PrefixState()
     var prefix: Prefix
 
-    /// D3DMetal comes with its own Wine; the other backends run on any other Wine.
-    private var backends: [String] {
-        library.inventory.backends.keys.sorted().filter { ($0 == "d3dmetal") == (prefix.wine == "gptk") }
-    }
+    private var backends: [String] { library.inventory.backends(for: prefix.wine) }
 
     var body: some View {
         Form {
@@ -143,8 +140,7 @@ struct NewPrefixSheet: View {
                 }
             }
             Picker("Grafická vrstva", selection: $form.gfx) {
-                ForEach(library.inventory.backends.keys.sorted().filter { ($0 == "d3dmetal") == (form.wine == "gptk") },
-                        id: \.self) { Text(Theme.gfxName($0)).tag($0) }
+                ForEach(library.inventory.backends(for: form.wine), id: \.self) { Text(Theme.gfxName($0)).tag($0) }
             }
         }
         .formStyle(.grouped)

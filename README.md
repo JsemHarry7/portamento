@@ -55,6 +55,7 @@ Everything lives in `~/Library/Application Support/Portamento` (set
 
 ```sh
 porta create steam                               # a prefix, on the default Wine and backend
+porta create steam-d3d12 --gfx d3dmetal          # one for D3D12 games, with Apple's D3DMetal
 porta install steam steam                        # install Steam into it (and make it the prefix's program)
 porta run steam                                  # start Steam; installed games show up in the app
 porta install mygame ~/Downloads/setup.exe       # run a game's installer; its shortcuts become programs
@@ -90,14 +91,14 @@ the prefix, as DXMT only enables it for a whole process tree.
 |---|---|---|
 | `cx` (default) | Wine 11.0 built from CodeWeavers' CrossOver 26.3 sources | msync; the fastest here; game controllers through SDL |
 | `staging` | Gcenx's Wine 11.21 Staging with Portamento's patched modules | |
-| `gptk` | Gcenx's CrossOver-based Wine 7.7 with Apple's D3DMetal 3.0 | D3D12 incl. DXR, but current Steam crashes on it |
+| `gptk` | Gcenx's CrossOver-based Wine 7.7 with Apple's D3DMetal 3.0 | current Steam crashes on it; `cx` runs D3DMetal too |
 
 | Graphics (`--gfx`) | |
 |---|---|
 | `dxmt` (default) | D3D10/11 → Metal ([DXMT](https://github.com/3Shain/dxmt)). Replaces `dxgi.dll`, so D3D12 doesn't work in the same prefix |
 | `dxvk` | D3D10/11 → Vulkan ([DXVK-macOS](https://github.com/Gcenx/DXVK-macOS) 1.10) |
 | `wined3d` | Wine's own D3D → OpenGL/Vulkan; D3D12 via vkd3d |
-| `d3dmetal` | Apple's D3DMetal, `gptk` Wine only |
+| `d3dmetal` | Apple's D3DMetal: D3D12 (incl. DXR) and D3D10/11 on Metal, on the `cx` Wine (or `gptk`). The way to run D3D12-only games |
 
 | Vulkan (`porta set <prefix> vulkan …`) | |
 |---|---|
@@ -163,7 +164,20 @@ in `RUNTIME_RELEASE` and checks each archive against its `SHA256SUMS`.
 
 D3DMetal is Apple's, under Apple's license, which doesn't allow
 redistributing it. Portamento doesn't ship it: the `gptk` Wine is downloaded
-from [Gcenx's Game Porting Toolkit builds](https://github.com/Gcenx/game-porting-toolkit).
+from [Gcenx's Game Porting Toolkit builds](https://github.com/Gcenx/game-porting-toolkit),
+and a `d3dmetal` prefix on the `cx` Wine uses the D3DMetal that comes with it.
+For a newer one, download the Game Porting Toolkit from
+[Apple](https://developer.apple.com/games/game-porting-toolkit/) and import it:
+
+```sh
+porta import-gptk ~/Downloads/Evaluation_environment_for_Windows_games_4.0_beta_3.dmg
+```
+
+`d3dmetal` prefixes then use the newest one from their next start. D3DMetal's
+unix modules (`d3d12.so`, `dxgi.so`, ...) are all the same library,
+`libd3dshared.dylib`, and porta links them to one copy of it: as separate
+copies, each is loaded with its own state, and D3DMetal crashes on the first
+call that crosses from one to another.
 
 ## License
 

@@ -420,7 +420,7 @@ struct GameInspector: View {
             switch Compatibility(graphics: graphics, prefix: preferred.prefix) {
             case .d3d12Only:
                 Note(symbol: "exclamationmark.triangle.fill", tint: .orange,
-                     text: "Hra umí jen DirectX 12, který tady zatím nefunguje, takže se nejspíš nespustí.")
+                     text: "Hra umí jen DirectX 12. Ten tu zvládá jen D3DMetal: přepni prefix na grafiku D3DMetal, jinak se hra nejspíš nespustí.")
             case .prefersD3D12:
                 Note(symbol: "info.circle", tint: .secondary,
                      text: "Hra umí DirectX 12 i starší verzi. Kdyby se nespustila, přepni ji v nastavení nebo ve spouštěči na DirectX 11 (ve Steamu často parametr -dx11).")
