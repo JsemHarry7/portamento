@@ -9,6 +9,10 @@ on:
       version:
         description: App version, e.g. 0.2 (the release is tagged app-0.2)
         required: true
+      notes:
+        description: What's new, in Markdown (the app shows it before updating)
+        required: false
+        default: ""
 
 permissions:
   contents: write
@@ -18,6 +22,7 @@ jobs:
     runs-on: macos-26
     env:
       VERSION: ${{ inputs.version }}
+      NOTES: ${{ inputs.notes }}
       GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@v7
@@ -27,7 +32,9 @@ jobs:
         run: ditto -c -k --keepParent build/Portamento.app "build/Portamento-$VERSION.zip"
       - name: Draft release
         run: |
-          cat > notes.md <<EOF
+          # what's new first, the app shows the part before the --- line
+          { [ -z "$NOTES" ] || printf '%s\n\n' "$NOTES"; echo "---"; echo; } > notes.md
+          cat >> notes.md <<EOF
           Portamento $VERSION for Apple Silicon Macs with macOS 26 or later.
 
           1. Unzip \`Portamento-$VERSION.zip\` and move \`Portamento.app\` to Applications.

@@ -21,7 +21,10 @@ struct AppRelease: Equatable, Sendable {
               let zip = URL(string: asset.browser_download_url), let page = URL(string: release.html_url)
         else { return nil }
         self.version = version
-        notes = release.body ?? ""
+        // what's new comes first; the steps for installing it from scratch follow a --- line
+        let lines = (release.body ?? "").replacingOccurrences(of: "\r\n", with: "\n").components(separatedBy: "\n")
+        notes = lines.prefix { $0.trimmingCharacters(in: .whitespaces) != "---" }
+            .joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
         self.zip = zip
         size = asset.size
         sha256 = asset.digest.flatMap { $0.hasPrefix("sha256:") ? String($0.dropFirst(7)) : nil }
