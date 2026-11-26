@@ -5,6 +5,8 @@ import UniformTypeIdentifiers
 
 final class PrefixState: ObservableObject {
     @Published var confirmingDelete = false
+    /// The Retina setting waiting for the user to say whether to restart the running prefix.
+    @Published var pendingRetina: Bool?
 }
 
 struct PrefixView: View {
@@ -39,6 +41,22 @@ struct PrefixView: View {
                 Text("Grafika")
             } footer: {
                 Text("Wine se u prefixu nedá změnit, každé si prefix upraví pro svou verzi. Pro jiné Wine vytvoř nový prefix.")
+            }
+
+            Section {
+                Toggle("Retina", isOn: Binding(
+                    get: { prefix.retina ?? false },
+                    set: { on in
+                        if prefix.isRunning {
+                            state.pendingRetina = on
+                        } else {
+                            Task { await library.setRetina(prefix, on, restart: false) }
+                        }
+                    }))
+            } header: {
+                Text("Obrazovka")
+            } footer: {
+                Text("S Retinou vidí Windows displej v plném rozlišení (třeba 3024×1964 místo 1512×982): hry můžou být ostřejší, ale jsou náročnější a programy, které si neumí zvětšit písmo, jsou poloviční. Rozlišení vybrané ve hře Mac nepřepíná, Portamento obraz hry roztáhne přes celou obrazovku.")
             }
 
             Section("Programy") {
@@ -81,6 +99,18 @@ struct PrefixView: View {
             }
             Button("Ukončit vše", systemImage: "stop.fill") { Task { await library.kill(prefix) } }
             Button("Smazat prefix", systemImage: "trash") { state.confirmingDelete = true }
+        }
+        .confirmationDialog("Restartovat \(prefix.name)?", isPresented: Binding(
+            get: { state.pendingRetina != nil },
+            set: { if !$0 { state.pendingRetina = nil } })) {
+            Button("Restartovat") {
+                if let on = state.pendingRetina { Task { await library.setRetina(prefix, on, restart: true) } }
+            }
+            Button("Až příště") {
+                if let on = state.pendingRetina { Task { await library.setRetina(prefix, on, restart: false) } }
+            }
+        } message: {
+            Text("Retina se změní až po restartu prefixu. Běžící programy se ukončí a hlavní program prefixu (třeba Steam) se spustí znovu.")
         }
         .confirmationDialog("Smazat prefix \(prefix.name)?", isPresented: $state.confirmingDelete) {
             Button("Přesunout do koše", role: .destructive) {

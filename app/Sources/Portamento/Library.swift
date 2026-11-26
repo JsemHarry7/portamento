@@ -213,6 +213,19 @@ final class Library {
         await reload()
     }
 
+    /// Switches Retina mode. Wine programs read it when they start, so a restart ends
+    /// the prefix's programs and starts its own one (Steam, say) again.
+    func setRetina(_ prefix: Prefix, _ on: Bool, restart: Bool) async {
+        await perform { try await self.client.set(prefix, "retina", on ? "on" : "off") }
+        if restart {
+            await kill(prefix)
+            if let program = prefix.programs.first(where: { $0.kind == .default && !$0.exe.isEmpty }) {
+                await launch(LibraryItem(program: program, prefix: prefix))
+            }
+        }
+        await reload()
+    }
+
     func setGame(_ item: LibraryItem, _ key: String, _ value: String) async {
         await perform { try await self.client.setGame(item.prefix, item.program, key, value) }
         await reload()

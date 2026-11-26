@@ -388,18 +388,68 @@ def sync_prefix_dlls(name, rt, gfx):
                 shutil.copy2(src, dst)
 
 
-def ngx_registry(name, rt, env):
-    """Points games' NGX at the nvngx.dll in system32, D3DMetal's DLSS on MetalFX,
-    whose signature isn't NVIDIA's."""
-    reg = prefix_dir(name) / "system.reg"
-    text = reg.read_text(errors="replace") if reg.exists() else ""
-    key = text.find("[Software\\\\NVIDIA Corporation\\\\Global\\\\NGXCore]")
-    if key >= 0 and '"EnableSignatureOverride"=dword:00000001' in text[key:text.find("\n\n", key)]:
+# Registry values porta keeps in its prefixes. Wine programs read them when they
+# start, so porta writes them only into a prefix that isn't running: if Steam were
+# up, it would keep the old ones and the games it starts the new ones.
+MAC_DRIVER = r"HKCU\Software\Wine\Mac Driver"
+
+
+def prefix_registry(cfg):
+    values = [
+        # a game's resolution doesn't switch the Mac's: win32u makes up the modes and
+        # scales the game's picture to the screen, which macOS's own mode switches
+        # break (the picture stays small, or in a corner)
+        (r"HKCU\Software\Wine\X11 Driver", "EmulateModeset", "REG_SZ", "y"),
+        # NGX, the DLSS loader in games, finds D3DMetal's nvngx in system32
+        *([(NGX_KEY, "FullPath", "REG_SZ", r"C:\Windows\System32"),
+           (NGX_KEY, "EnableSignatureOverride", "REG_DWORD", "1")] if cfg["gfx"] == "d3dmetal" else []),
+    ]
+    if "retina" in cfg:  # Windows sees the display's pixels rather than its points
+        values.append((MAC_DRIVER, "RetinaMode", "REG_SZ", "y" if cfg["retina"] else "n"))
+    return values
+
+
+def reg_get(name, key, value):
+    """A value as the prefix's user.reg or system.reg has it ('"y"', 'dword:00000001'), or None."""
+    hive, _, path = key.partition("\\")
+    try:
+        text = (prefix_dir(name) / ("user.reg" if hive == "HKCU" else "system.reg")).read_text(errors="replace")
+    except FileNotFoundError:
+        return None
+    start = text.lower().find("[" + path.replace("\\", "\\\\").lower() + "]")
+    if start < 0:
+        return None
+    end = text.find("\n[", start)
+    found = re.search(rf'^"{re.escape(value)}"=(.*)$', text[start:end if end >= 0 else None], re.M | re.I)
+    return found and found.group(1)
+
+
+def reg_data(kind, data):
+    return f"dword:{int(data):08x}" if kind == "REG_DWORD" else '"' + data.replace("\\", "\\\\") + '"'
+
+
+def retina(name, cfg):
+    if "retina" in cfg:
+        return cfg["retina"]
+    return (reg_get(name, MAC_DRIVER, "RetinaMode") or '""').strip('"')[:1].lower() in ("y", "t", "1")
+
+
+def sync_registry(name, rt, env, cfg):
+    """Imports the values porta keeps that the prefix doesn't have yet, in one regedit run."""
+    missing = [(key, value, kind, data) for key, value, kind, data in prefix_registry(cfg)
+               if (reg_get(name, key, value) or "").lower() != reg_data(kind, data).lower()]
+    if not missing:
         return
-    for value, kind, data in (("FullPath", "REG_SZ", r"C:\Windows\System32"),
-                              ("EnableSignatureOverride", "REG_DWORD", "1")):
-        subprocess.run([wine_bin(rt), "reg", "add", NGX_KEY, "/v", value, "/t", kind, "/d", data, "/f"],
-                       env=env, capture_output=True)
+    hives = {"HKCU": "HKEY_CURRENT_USER", "HKLM": "HKEY_LOCAL_MACHINE"}
+    lines = ["REGEDIT4"]
+    for key, value, kind, data in missing:
+        hive, _, path = key.partition("\\")
+        lines += ["", f"[{hives[hive]}\\{path}]", f'"{value}"={reg_data(kind, data)}']
+    reg = prefix_dir(name) / "drive_c/portamento/registry.reg"
+    reg.parent.mkdir(parents=True, exist_ok=True)
+    reg.write_text("\r\n".join(lines) + "\r\n")
+    subprocess.run([wine_bin(rt), "regedit", "/S", r"C:\portamento\registry.reg"], env=env, capture_output=True)
+    subprocess.run([rt / "bin/wineserver", "-w"], env=env)  # nothing that read the old values stays up
 
 
 def cmd_setup(args):
@@ -696,6 +746,7 @@ def cmd_list(args):
         print(json.dumps({
             "prefixes": [{"name": n, "wine": prefix_wine(c), "gfx": c["gfx"], "vulkan": c.get("vulkan", "moltenvk"),
                           "args": c.get("args", []), "env": c.get("env", {}), "path": str(prefix_dir(n)),
+                          "retina": retina(n, c),
                           "programs": [dict(p, log=str(log_path(n, p["exe"])),
                                             graphics=graphics(n, p).get("graphics"),
                                             settings=c.get("games", {}).get(game_key(p), {}))
@@ -808,6 +859,12 @@ def cmd_set(args):
         cfg["exe"] = args.value
     elif args.key == "args":
         cfg["args"] = shlex.split(args.value)
+    elif args.key == "retina":
+        if args.value not in ("on", "off"):
+            die("retina: on or off")
+        cfg["retina"] = args.value == "on"
+        if server_running(args.name):
+            print(f"restart the prefix for this to apply: porta kill {args.name}")
     elif args.key == "env":
         key, _, val = args.value.partition("=")
         if val:
@@ -829,8 +886,8 @@ def cmd_run(args):
     sync_prefix_dlls(args.name, rt, gfx)
     cmd = [str(wine_bin(rt)), exe, *(args.args if args.exe else cfg.get("args", []))]
     env = wine_env(args.name, cfg, args.hud)
-    if gfx == "d3dmetal":
-        ngx_registry(args.name, rt, env)
+    if not server_running(args.name):
+        sync_registry(args.name, rt, env, dict(cfg, gfx=gfx))
     if args.fg:
         os.execve(cmd[0], cmd, env)
     LOGS.mkdir(parents=True, exist_ok=True)
@@ -995,7 +1052,9 @@ def cmd_override(args):
 def cmd_kill(args):
     cfg = load(args.name)
     rt = runtime(prefix_wine(cfg), cfg["gfx"])
-    subprocess.run([rt / "bin/wineserver", "-k"], env=wine_env(args.name, cfg))
+    env = wine_env(args.name, cfg)
+    subprocess.run([rt / "bin/wineserver", "-k"], env=env)
+    subprocess.run([rt / "bin/wineserver", "-w"], env=env)  # so the prefix can start afresh right away
 
 
 # smoke tests from tests/build.sh: name -> (exe, depends on the graphics backend, depends on the Vulkan driver)
@@ -1120,7 +1179,7 @@ def main():
 
     s = sub.add_parser("set", help="change a prefix setting")
     s.add_argument("name")
-    s.add_argument("key", choices=["gfx", "vulkan", "exe", "args", "env"])
+    s.add_argument("key", choices=["gfx", "vulkan", "exe", "args", "env", "retina"])
     s.add_argument("value", nargs=argparse.REMAINDER,
                    help="may start with '-'; for env: KEY=VALUE (KEY= removes it)")
     s.set_defaults(fn=cmd_set)

@@ -27,4 +27,5 @@ $CC -O2 -I"$VULKAN_INCLUDE" -o "$OUT/vktest.exe" vktest.c
 $CC -O2 -o "$OUT/gltest.exe" gltest.c -lopengl32 -lgdi32
 $CC -O2 -o "$OUT/tone.exe" tone.c -lwinmm -lm
 $CC -O2 -o "$OUT/xprocgdi.exe" xprocgdi.c -lgdi32
+$CC -O2 -o "$OUT/modetest.exe" modetest.c -ld3d11 -ldxguid -luuid
 clang -O2 -o "$OUT/wincap" wincap.c -framework CoreGraphics -framework CoreFoundation

@@ -40,11 +40,23 @@ struct Prefix: Decodable, Identifiable, Hashable {
     var env: [String: String]
     var path: String
     var programs: [Program]
+    /// Whether Windows sees the display's pixels rather than its points (nil from older porta).
+    var retina: Bool?
 
     var id: String { name }
     /// Scratch prefixes `porta selftest` makes for itself.
     var isInternal: Bool { name.hasPrefix("selftest-") }
     var driveC: URL { URL(fileURLWithPath: path).appending(path: "drive_c") }
+
+    /// Whether anything runs in the prefix: its wineserver keeps a socket in
+    /// /tmp/.wine-<uid>/server-<device>-<inode of the prefix>/ while it's up.
+    var isRunning: Bool {
+        var info = stat()
+        guard stat(path, &info) == 0 else { return false }
+        let server = String(format: "/tmp/.wine-%u/server-%llx-%llx", getuid(),
+                            UInt64(UInt32(bitPattern: info.st_dev)), UInt64(info.st_ino))
+        return FileManager.default.fileExists(atPath: server + "/socket")
+    }
 }
 
 struct Program: Decodable, Identifiable, Hashable {

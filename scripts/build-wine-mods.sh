@@ -3,6 +3,7 @@
 # Gcenx wine-staging build (upstream + every staging patch) plus ours:
 #
 #   patches/winemac-metal-compat.patch              -> winemac.so     (DXMT/D3DMetal on upstream Wine)
+#   patches/winemac-fullscreen-mask-retina.patch    -> winemac.so     (letterboxing in Retina mode)
 #   patches/kernelbase-steamwebhelper-in-process-gpu.patch
 #                                                   -> kernelbase.dll (Steam UI not black)
 #   patches/ntdll-export-wine-unix-call.patch       -> ntdll.dll      (D3DMetal PE modules)
@@ -46,7 +47,7 @@ tar -xzf "wine-staging-$VER.tar.gz"
 python3 -I "wine-staging-$VER/staging/patchinstall.py" DESTDIR="$TREE" --all > "$SRC/patchinstall.log" 2>&1
 
 cd "$TREE"
-for p in winemac-metal-compat kernelbase-steamwebhelper-in-process-gpu ntdll-export-wine-unix-call; do
+for p in winemac-metal-compat winemac-fullscreen-mask-retina kernelbase-steamwebhelper-in-process-gpu ntdll-export-wine-unix-call; do
     patch -p1 --forward < "$ROOT/patches/$p.patch"
 done
 if [ -n "${PORTA_SOURCE_OUT:-}" ]; then
@@ -75,5 +76,5 @@ mkdir -p "$DEST/x86_64-unix" "$DEST/x86_64-windows" "$DEST/doc"
 cp dlls/winemac.drv/winemac.so "$DEST/x86_64-unix/"
 cp dlls/kernelbase/x86_64-windows/kernelbase.dll dlls/ntdll/x86_64-windows/ntdll.dll "$DEST/x86_64-windows/"
 cp "$TREE/COPYING.LIB" "$TREE/LICENSE" "$TREE/AUTHORS" "$DEST/doc/"
-cp "$ROOT"/patches/{winemac-metal-compat,kernelbase-steamwebhelper-in-process-gpu,ntdll-export-wine-unix-call}.patch "$DEST/doc/"
+cp "$ROOT"/patches/{winemac-metal-compat,winemac-fullscreen-mask-retina,kernelbase-steamwebhelper-in-process-gpu,ntdll-export-wine-unix-call}.patch "$DEST/doc/"
 echo "$DEST"

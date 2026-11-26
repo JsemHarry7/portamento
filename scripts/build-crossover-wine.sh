@@ -41,8 +41,11 @@ mkdir -p "$(dirname "$TARBALL")"
 rm -rf "$SRC"
 mkdir -p "$SRC"
 tar -xzf "$TARBALL" -C "$SRC" sources/wine
-# Steam's web UI is black without this one, the other patches are for upstream Wine only
-(cd "$SRC/sources/wine" && patch -p1 --forward < "$ROOT/patches/kernelbase-steamwebhelper-in-process-gpu.patch")
+# Steam's web UI is black without the first; the others place a fullscreen game's
+# picture right when it doesn't fill the screen. The rest are for upstream Wine only.
+for p in kernelbase-steamwebhelper-in-process-gpu winemac-fullscreen-mask-retina winemac-client-surface-rect; do
+    (cd "$SRC/sources/wine" && patch -p1 --forward < "$ROOT/patches/$p.patch")
+done
 if [ -n "${PORTA_SOURCE_OUT:-}" ]; then
     tar -C "$SRC/sources" -cJf "$PORTA_SOURCE_OUT" wine
 fi
@@ -94,7 +97,9 @@ find "$DEST.tmp/bin" "$DEST.tmp/lib/wine/x86_64-unix" -type f | while read -r f;
 done
 mkdir -p "$DEST.tmp/share/doc/wine"
 cp "$SRC/sources/wine/COPYING.LIB" "$SRC/sources/wine/LICENSE" "$SRC/sources/wine/AUTHORS" \
-    "$ROOT/patches/kernelbase-steamwebhelper-in-process-gpu.patch" "$DEST.tmp/share/doc/wine/"
+    "$ROOT/patches/kernelbase-steamwebhelper-in-process-gpu.patch" \
+    "$ROOT/patches/winemac-fullscreen-mask-retina.patch" \
+    "$ROOT/patches/winemac-client-surface-rect.patch" "$DEST.tmp/share/doc/wine/"
 # This Wine reaches Vulkan through the loader, which needs a manifest to find
 # MoltenVK (one of the libraries porta setup clones in).
 mkdir -p "$DEST.tmp/share/vulkan/icd.d"

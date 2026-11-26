@@ -150,3 +150,9 @@
 "Naposledy %@. Testy na chvíli otevírají okna, fps jsou pro jednoduchou scénu, ne pro hry." = "Last run %@. The tests open windows for a moment; the fps are for a simple scene, not for games.";
 "DLSS přes MetalFX" = "DLSS on MetalFX";
 "Hra pak nabídne v nastavení grafiky DLSS a místo karty NVIDIA ho spočítá Applův MetalFX: s nižším rozlišením vykreslování dostaneš víc snímků. Grafiku NVIDIA pak vidí všechny hry v prefixu. Zapnutí i vypnutí platí až po restartu Steamu (prefixu)." = "The game then offers DLSS in its graphics settings, and Apple's MetalFX does the work instead of an NVIDIA card: rendering at a lower resolution gets you more frames. Every game in the prefix then sees an NVIDIA GPU. Turning it on or off applies after restarting Steam (the prefix).";
+"Obrazovka" = "Display";
+"S Retinou vidí Windows displej v plném rozlišení (třeba 3024×1964 místo 1512×982): hry můžou být ostřejší, ale jsou náročnější a programy, které si neumí zvětšit písmo, jsou poloviční. Rozlišení vybrané ve hře Mac nepřepíná, Portamento obraz hry roztáhne přes celou obrazovku." = "With Retina, Windows sees the display at its full resolution (say 3024×1964 rather than 1512×982): games can look sharper but are more demanding, and programs that can't enlarge their text are half size. A resolution picked in a game doesn't switch the Mac's: Portamento stretches the game's picture over the whole screen.";
+"Restartovat %@?" = "Restart %@?";
+"Restartovat" = "Restart";
+"Až příště" = "Next Time";
+"Retina se změní až po restartu prefixu. Běžící programy se ukončí a hlavní program prefixu (třeba Steam) se spustí znovu." = "Retina changes once the prefix restarts. Running programs end and the prefix's main program (Steam, say) starts again.";

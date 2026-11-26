@@ -62,6 +62,7 @@ porta install mygame ~/Downloads/setup.exe       # run a game's installer; its s
 porta run --hud steam 'C:\path\to\game.exe'      # with Apple's Metal performance HUD
 porta set steam gfx dxvk                         # switch the graphics backend
 porta set steam vulkan kosmickrisp               # switch the Vulkan driver
+porta set steam retina on                        # Windows sees the display's pixels (applies from the next start)
 porta override steam Game.exe d3dcompiler_47=native,builtin
 porta game steam Wreckfest                       # what the game draws with (D3D11, D3D12, Vulkan...) and its settings
 porta game steam Wreckfest metalfx 2             # DXMT: MetalFX enlarges the game's picture 2×
@@ -86,6 +87,16 @@ prefix (`C:\portamento\dxmt.conf`) with a section per executable, so they apply
 per game even when Steam starts it; turning MetalFX on or off needs a restart of
 the prefix, as DXMT only enables it for a whole process tree. DLSS is the same:
 D3DMetal turns it on for the prefix, and then every game in it sees an NVIDIA GPU.
+
+A resolution picked in a game doesn't switch the Mac's display. porta turns on
+Wine's `EmulateModeset` in every prefix: the game gets the mode it asks for, and
+Wine scales its picture to the screen, with black bars where the shape differs.
+Real mode switches put the picture in a corner or at a quarter of the screen.
+With Retina (`porta set <prefix> retina on`, or the switch in the app) Windows
+sees the display's pixels (3024×1964 on a 14" MacBook Pro) rather than its
+points (1512×982). Wine programs read both settings when they start, so porta
+writes them into a prefix only when nothing runs in it, and the app restarts a
+running prefix when Retina changes.
 
 ### What a prefix can use
 
@@ -121,6 +132,13 @@ so it takes no extra disk space. A few things needed patches; they are in
   GDI drawing from another process, so Steam's Chromium UI stayed black. This
   starts `steamwebhelper.exe` with `--in-process-gpu`.
 - **ntdll-export-wine-unix-call**: exports `__wine_unix_call` for D3DMetal's PE modules.
+- **winemac-fullscreen-mask-retina**: the black bars around a fullscreen game
+  whose picture doesn't fill the screen were placed in pixels where Cocoa wants
+  points, so in Retina mode the bottom of the picture was cut off.
+- **winemac-client-surface-rect** (CrossOver's Wine): the game's Metal view got
+  its size from a rounded DPI rather than from the exact scaled rectangle,
+  leaving a white strip next to a scaled picture. Upstream Wine already does it
+  this way.
 - **mesa-kosmickrisp-fill-mode-non-solid**: wireframe polygon mode for
   KosmicKrisp, which BeamNG's Vulkan renderer requires.
 - **mesa-kosmickrisp-hoist-indirect-count**: KosmicKrisp emulates
