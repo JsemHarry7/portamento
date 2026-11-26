@@ -1,5 +1,7 @@
 # Builds the runtimes `porta setup` downloads (everything in porta's PREBUILT)
-# from source and publishes them, with their patched sources, as a release.
+# from source and attaches them, with their patched sources, to a draft release.
+# Publish it by hand (gh release edit <tag> --draft=false): the workflow's token
+# may not create the tag, when main has moved on to newer workflow files.
 #
 # Releases are never changed after the fact: build a new tag (runtimes-5, ...)
 # with the runtimes that changed, then point their entries in porta's PREBUILT
@@ -149,5 +151,5 @@ jobs:
           The CrossOver Wine is linked against the x86_64 libraries in Gcenx's wine-staging build;
           they are not included here, \`porta setup\` takes them from that build.
           EOF
-          gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
-              --title "$TAG" --notes-file notes.md ./*.tar.xz SHA256SUMS
+          gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --draft \
+              --latest=false --title "$TAG" --notes-file notes.md ./*.tar.xz SHA256SUMS
