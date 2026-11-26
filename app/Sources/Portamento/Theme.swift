@@ -81,6 +81,11 @@ enum Theme {
         "\(n) \(String(localized: n == 1 ? one : (2...4).contains(n) ? few : many))"
     }
 
+    /// "12,4 MB" in the user's locale.
+    static func bytes(_ count: Int64) -> String {
+        ByteCountFormatter.string(fromByteCount: count, countStyle: .file)
+    }
+
     /// A prefix's default program is named after its file ("steam"); give it a capital.
     static func displayName(_ program: Program) -> String {
         program.kind == .default ? program.name.prefix(1).uppercased() + program.name.dropFirst() : program.name

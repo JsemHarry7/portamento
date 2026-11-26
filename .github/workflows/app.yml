@@ -22,7 +22,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - name: Build
-        run: PORTA_VERSION="$VERSION" scripts/build-app.sh
+        run: PORTA_VERSION="$VERSION" PORTA_REPOSITORY="$GITHUB_REPOSITORY" scripts/build-app.sh
       - name: Package
         run: ditto -c -k --keepParent build/Portamento.app "build/Portamento-$VERSION.zip"
       - name: Draft release
@@ -39,7 +39,10 @@ jobs:
              (a few GB). It needs Python 3 from the Xcode Command Line Tools; the app
              tells you if they are missing.
 
-          Runtimes: \`$(sed -n 's/^RUNTIME_RELEASE = "\(.*\)"/\1/p' porta)\`.
+          Later versions install from inside the app: it checks for them on start
+          and updates Wine and the other runtimes it needs right after.
+
+          Runtimes: $(python3 -c 'import runpy; print(", ".join(f"{n} ({r})" for n, (_, _, r) in runpy.run_path("porta")["PREBUILT"].items()))').
           EOF
           gh release create "app-$VERSION" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
               --draft --title "Portamento $VERSION" --notes-file notes.md "build/Portamento-$VERSION.zip"

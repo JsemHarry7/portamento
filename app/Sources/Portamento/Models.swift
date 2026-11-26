@@ -16,9 +16,11 @@ struct Inventory: Decodable {
         var gfx: String
     }
 
-    /// What `porta setup` still has to download or build.
+    /// What `porta setup` still has to download or build, and the installed
+    /// runtimes it would replace with newer ones (nil from older porta).
     struct Setup: Decodable {
         var missing: [String]
+        var updates: [String]?
     }
 
     static let empty = Inventory(prefixes: [], wines: [:], backends: [:], vulkan: [:],

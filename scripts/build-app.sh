@@ -1,9 +1,13 @@
 #!/bin/bash
 # Build the SwiftUI front end (app/) into build/Portamento.app, icon included.
 # Needs: Xcode CLT with the macOS 26+ SDK (Swift 6.2+). No Xcode required.
-# Env:   PORTA_VERSION  the app's version (default 0.1)
+# Env:   PORTA_VERSION     the app's version; a release build, which looks for updates
+#                          by itself (without it: 0.1, and only when asked)
+#        PORTA_REPOSITORY  the GitHub repository it updates from (default JsemHarry7/portamento)
 set -euo pipefail
 VERSION="${PORTA_VERSION:-0.1}"
+CHECKS="$([ -n "${PORTA_VERSION:-}" ] && echo true || echo false)"
+REPOSITORY="${PORTA_REPOSITORY:-JsemHarry7/portamento}"
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 APP="$ROOT/build/Portamento.app"
@@ -42,6 +46,8 @@ cat > "$APP/Contents/Info.plist" <<EOF
     <key>CFBundlePackageType</key><string>APPL</string>
     <key>CFBundleShortVersionString</key><string>$VERSION</string>
     <key>CFBundleVersion</key><string>1</string>
+    <key>PortamentoChecksForUpdates</key><$CHECKS/>
+    <key>PortamentoRepository</key><string>$REPOSITORY</string>
     <key>LSMinimumSystemVersion</key><string>26.0</string>
     <key>LSApplicationCategoryType</key><string>public.app-category.games</string>
     <key>NSHighResolutionCapable</key><true/>

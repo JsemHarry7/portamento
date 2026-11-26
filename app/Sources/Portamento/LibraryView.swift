@@ -56,9 +56,11 @@ struct LibraryView: View {
             }
         }
         .safeAreaInset(edge: .top) {
-            if library.needsSetup || library.activity != nil {
-                RuntimeBanner().padding(.horizontal, Theme.contentPadding).padding(.top, 8)
+            VStack(spacing: 8) {
+                UpdateBanner()
+                if library.needsSetup || library.activity != nil { RuntimeBanner() }
             }
+            .padding(.horizontal, Theme.contentPadding).padding(.top, 8)
         }
         .searchable(text: $state.query, placement: .toolbar, prompt: "Hledat v knihovně")
         .navigationTitle("Knihovna")
@@ -88,12 +90,22 @@ struct LibraryView: View {
     }
 }
 
-/// A runtime update porta can install (a new KosmicKrisp, say), or the one installing.
+/// Runtimes porta wants (a new KosmicKrisp, newer Wine), or the setup installing them.
+final class RuntimeBannerState: ObservableObject {
+    @Published var confirmingStop = false
+}
+
 struct RuntimeBanner: View {
     @Environment(Library.self) private var library
+    @StateObject private var state = RuntimeBannerState()
 
     private var names: String {
-        Component.all.filter { $0.isMissing(library.inventory.setup.missing) }.map(\.name).formatted(.list(type: .and))
+        let wanted = library.inventory.setup.missing + library.runtimeUpdates
+        return Component.all.filter { $0.isMissing(wanted) }.map(\.name).formatted(.list(type: .and))
+    }
+
+    private var running: String {
+        library.runningPrefixes.map(\.name).formatted(.list(type: .and))
     }
 
     var body: some View {
@@ -105,14 +117,28 @@ struct RuntimeBanner: View {
                 VStack(alignment: .leading, spacing: 1) {
                     Text("Nové verze ke stažení").font(.headline)
                     Text(names).font(.callout).foregroundStyle(.secondary)
+                    if !library.runtimeUpdates.isEmpty, !library.runningPrefixes.isEmpty {
+                        Text("Aktualizace ukončí běžící Steam a hry.").font(.caption).foregroundStyle(.secondary)
+                    }
                 }
                 Spacer()
-                Button("Stáhnout") { Task { await library.runSetup() } }
-                    .buttonStyle(.glassProminent)
-                    .disabled(library.activity?.isRunning == true)
+                Button(library.runtimeUpdates.isEmpty ? LocalizedStringKey("Stáhnout") : "Aktualizovat") {
+                    if !library.runtimeUpdates.isEmpty, !library.runningPrefixes.isEmpty {
+                        state.confirmingStop = true
+                    } else {
+                        Task { await library.runSetup() }
+                    }
+                }
+                .buttonStyle(.glassProminent)
+                .disabled(library.activity?.isRunning == true)
             }
             .padding(12)
             .glassEffect(.regular, in: .rect(cornerRadius: 14))
+            .confirmationDialog("Ukončit běžící hry a aktualizovat?", isPresented: $state.confirmingStop) {
+                Button("Ukončit a aktualizovat", role: .destructive) { Task { await library.updateRuntimes() } }
+            } message: {
+                Text("Nové verze nahradí soubory, které teď používá \(running). Neuložený postup ve hrách se ztratí.")
+            }
         }
     }
 }

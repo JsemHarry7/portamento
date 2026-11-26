@@ -2,17 +2,39 @@ import SwiftUI
 
 struct StatusView: View {
     @Environment(Library.self) private var library
+    @Environment(AppUpdater.self) private var updater
+    @EnvironmentObject private var content: ContentState
+    @StateObject private var runtimes = RuntimeBannerState()
     private let tests = ["d3d9", "d3d11", "d3d12", "vulkan", "opengl"]
 
     var body: some View {
         Form {
+            Section("Portamento") {
+                LabeledContent("Verze", value: AppUpdater.current)
+                HStack {
+                    if let release = updater.release, AppUpdater.isNewer(release.version, than: AppUpdater.current) {
+                        Label("Je k dispozici \(release.version)", systemImage: "sparkles").foregroundStyle(Theme.accent)
+                    }
+                    Spacer()
+                    Button("Vyhledat aktualizace…") {
+                        content.showingUpdate = true
+                        Task { await updater.check() }
+                    }
+                    .disabled(updater.isBusy)
+                }
+            }
             Section {
-                if library.inventory.setup.missing.isEmpty {
-                    Label("Všechno je nainstalované", systemImage: "checkmark.circle.fill").foregroundStyle(.green)
+                if !library.needsSetup {
+                    Label("Všechno je nainstalované a aktuální", systemImage: "checkmark.circle.fill").foregroundStyle(.green)
                 } else {
                     ForEach(Component.all.filter { $0.isMissing(library.inventory.setup.missing) }) { component in
                         LabeledContent(component.name) {
                             Text("chybí").foregroundStyle(.secondary)
+                        }
+                    }
+                    ForEach(Component.all.filter { $0.isMissing(library.runtimeUpdates) }) { component in
+                        LabeledContent(component.name) {
+                            Text("nová verze").foregroundStyle(Theme.accent)
                         }
                     }
                 }
@@ -26,6 +48,20 @@ struct StatusView: View {
                     if !library.inventory.setup.missing.isEmpty {
                         Button("Doinstalovat") { Task { await library.runSetup() } }
                             .disabled(library.activity?.isRunning == true)
+                    } else if !library.runtimeUpdates.isEmpty {
+                        Button("Aktualizovat") {
+                            if library.runningPrefixes.isEmpty {
+                                Task { await library.runSetup() }
+                            } else {
+                                runtimes.confirmingStop = true
+                            }
+                        }
+                        .disabled(library.activity?.isRunning == true)
+                        .confirmationDialog("Ukončit běžící hry a aktualizovat?", isPresented: $runtimes.confirmingStop) {
+                            Button("Ukončit a aktualizovat", role: .destructive) { Task { await library.updateRuntimes() } }
+                        } message: {
+                            Text("Nové verze nahradí soubory, které teď používá \(library.runningPrefixes.map(\.name).formatted(.list(type: .and))). Neuložený postup ve hrách se ztratí.")
+                        }
                     }
                 }
             }

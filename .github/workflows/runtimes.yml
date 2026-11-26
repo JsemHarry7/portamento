@@ -1,38 +1,56 @@
 # Builds the runtimes `porta setup` downloads (everything in porta's PREBUILT)
 # from source and publishes them, with their patched sources, as a release.
 #
-# Releases are never changed after the fact: build a new tag (runtimes-2, ...)
-# and then point RUNTIME_RELEASE in porta at it.
+# Releases are never changed after the fact: build a new tag (runtimes-5, ...)
+# with the runtimes that changed, then point their entries in porta's PREBUILT
+# at it. porta setup replaces those on every Mac where they're installed.
 name: Runtimes
 
 on:
   workflow_dispatch:
     inputs:
       tag:
-        description: Release tag to create, e.g. runtimes-2 (must not exist yet)
+        description: Release tag to create, e.g. runtimes-5 (must not exist yet)
         required: true
+      only:
+        description: "Only these, comma-separated: wine-mods, wine-cx, kosmickrisp, selftests (empty: all)"
+        required: false
+        default: ""
 
 permissions:
   contents: write
 
 jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      include: ${{ steps.plan.outputs.include }}
+    steps:
+      - id: plan
+        env:
+          ONLY: ${{ inputs.only }}
+        run: |
+          all='[
+            {"key": "wine-mods", "script": "scripts/build-wine-mods.sh", "brew": "bison autoconf mingw-w64"},
+            {"key": "wine-cx", "script": "scripts/build-crossover-wine.sh", "brew": "bison mingw-w64 freetype gnutls sdl2", "needs-staging": true},
+            {"key": "kosmickrisp", "script": "scripts/build-kosmickrisp.sh", "brew": "meson ninja pkgconf bison llvm spirv-llvm-translator spirv-tools glslang libclc"},
+            {"key": "selftests", "script": "tests/build.sh", "brew": "mingw-w64 vulkan-headers"}
+          ]'
+          include=$(jq -c --arg only "$ONLY" '
+            ($only | gsub(" "; "") | split(",") | map(select(. != ""))) as $keys
+            | map(select(($keys | length) == 0 or (.key as $k | $keys | index($k))))' <<< "$all")
+          [ "$include" != "[]" ] || { echo "nothing matches: $ONLY" >&2; exit 1; }
+          echo "include=$include" >> "$GITHUB_OUTPUT"
+
   build:
     name: ${{ matrix.script }}
+    needs: plan
     runs-on: macos-26
     timeout-minutes: 360
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - script: scripts/build-wine-mods.sh
-            brew: bison autoconf mingw-w64
-          - script: scripts/build-crossover-wine.sh
-            brew: bison mingw-w64 freetype gnutls sdl2
-            needs-staging: true
-          - script: scripts/build-kosmickrisp.sh
-            brew: meson ninja pkgconf bison llvm spirv-llvm-translator spirv-tools glslang libclc
-          - script: tests/build.sh
-            brew: mingw-w64 vulkan-headers
+        include: ${{ fromJSON(needs.plan.outputs.include) }}
     env:
       PORTA_NICE: ""  # full speed, the runner has nothing else to do
     steps:
@@ -49,7 +67,7 @@ jobs:
           read -r NAME VERSION < <(python3 -c '
           import runpy, sys
           prebuilt = runpy.run_path("porta")["PREBUILT"]
-          print(*next((n, v or "") for n, (script, v) in prebuilt.items() if script == sys.argv[1]))
+          print(*next((n, v or "") for n, (script, v, *_) in prebuilt.items() if script == sys.argv[1]))
           ' "${{ matrix.script }}")
           echo "NAME=$NAME" >> "$GITHUB_ENV"
           echo "VERSION=$VERSION" >> "$GITHUB_ENV"
@@ -118,7 +136,7 @@ jobs:
           cat SHA256SUMS
           cat > notes.md <<EOF
           Runtimes for \`porta setup\`, built from source by the Runtimes workflow at ${GITHUB_SHA::7}.
-          To use them, set \`RUNTIME_RELEASE = "$TAG"\` in \`porta\`.
+          To use one, point its entry in \`PREBUILT\` in \`porta\` at \`$TAG\`; \`porta setup\` then replaces it where it's installed.
 
           | Archive | What | License |
           |---|---|---|

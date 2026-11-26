@@ -25,8 +25,12 @@ final class Library {
 
     var prefixes: [Prefix] { inventory.prefixes.filter { !$0.isInternal } }
 
-    /// Runtimes `porta setup` still has to fetch. Only meaningful once loaded.
-    var needsSetup: Bool { loaded && !inventory.setup.missing.isEmpty }
+    /// Runtimes `porta setup` still has to fetch or update. Only meaningful once loaded.
+    var needsSetup: Bool { loaded && !(inventory.setup.missing.isEmpty && runtimeUpdates.isEmpty) }
+    /// Installed runtimes a newer porta has newer versions of.
+    var runtimeUpdates: [String] { inventory.setup.updates ?? [] }
+    /// Prefixes something runs in, scratch ones included: setup won't replace runtimes under them.
+    var runningPrefixes: [Prefix] { inventory.prefixes.filter(\.isRunning) }
     /// Nothing installed yet: the app opens on the welcome screen.
     var needsFirstSetup: Bool { needsSetup && !inventory.wines.values.contains(true) }
     private(set) var loaded = false
@@ -148,12 +152,29 @@ final class Library {
         requirements = await PortaClient.missingRequirements()
     }
 
+    /// Stops what runs (Steam, games) so porta can replace the runtimes under it, then sets up.
+    func updateRuntimes() async {
+        for prefix in runningPrefixes { await kill(prefix) }
+        await runSetup()
+    }
+
+    /// Right after Portamento updated itself: fetch the runtimes it wants, unless
+    /// something is running, in which case the banner asks.
+    func updateRuntimesIfIdle() async {
+        if !loaded { await reload() }
+        if !runtimeUpdates.isEmpty, runningPrefixes.isEmpty, activity == nil { await runSetup() }
+    }
+
     /// Downloads and unpacks everything porta needs.
     func runSetup() async {
         await track(Activity.setupTitle) { output in
             try await self.client.setup(output: output)
         }
         await reload()
+        // porta keeps a runtime it couldn't replace (offline, or a prefix started meanwhile)
+        if !runtimeUpdates.isEmpty, let activity, activity.title == Activity.setupTitle, activity.error == nil {
+            activity.finish(error: String(localized: "Některé nové verze se nepodařilo nainstalovat. Podrobnosti jsou ve výpisu, zkus to později znovu."))
+        }
     }
 
     /// Installs Steam or runs an installer in a prefix, creating the prefix first if
@@ -327,6 +348,8 @@ final class Activity {
             ("updated ", String(localized: "Aktualizováno: ")), ("installing Rosetta", String(localized: "Instaluji Rosettu")),
             ("installing Steam", String(localized: "Instaluji Steam")), ("running ", String(localized: "Běží instalátor ")),
             ("ready:", String(localized: "Hotovo")),
+            ("skipping the update of ", String(localized: "Neaktualizováno, něco běží: ")),
+            ("couldn't download ", String(localized: "Nepodařilo se stáhnout: ")),
         ]
         for (prefix, said) in rules where line.hasPrefix(prefix) {
             var rest = String(line.dropFirst(prefix.count))

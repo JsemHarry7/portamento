@@ -87,14 +87,18 @@ VULKAN_DRIVERS = {
 # What porta builds itself (scripts/build-*.sh) comes prebuilt from the project's
 # GitHub releases, made by .github/workflows/runtimes.yml from the same scripts.
 # Each archive unpacks into RUNTIMES/<name>/; SHA256SUMS in the release covers them all.
+# A release holds only the runtimes that changed, so each names the one it's from.
+# porta setup replaces an installed runtime from another release; the release is
+# written into it as .porta-release (those from before carry none: runtimes-3).
 RELEASES = os.environ.get("PORTA_RELEASES", "https://github.com/JsemHarry7/portamento/releases/download")
-RUNTIME_RELEASE = "runtimes-3"
-PREBUILT = {  # name -> (script that builds it from source, version passed to it)
-    MODS_DIR.name: ("scripts/build-wine-mods.sh", WINE_VERSION),
-    f"wine-cx-{CX_VERSION}": ("scripts/build-crossover-wine.sh", CX_VERSION),
-    f"kosmickrisp-{KOSMICKRISP_VERSION}": ("scripts/build-kosmickrisp.sh", KOSMICKRISP_VERSION),
-    "selftests": ("tests/build.sh", None),  # the Windows programs `porta selftest` runs
+PREBUILT = {  # name -> (script that builds it from source, version passed to it, release)
+    MODS_DIR.name: ("scripts/build-wine-mods.sh", WINE_VERSION, "runtimes-4"),
+    f"wine-cx-{CX_VERSION}": ("scripts/build-crossover-wine.sh", CX_VERSION, "runtimes-4"),
+    f"kosmickrisp-{KOSMICKRISP_VERSION}": ("scripts/build-kosmickrisp.sh", KOSMICKRISP_VERSION, "runtimes-3"),
+    "selftests": ("tests/build.sh", None, "runtimes-4"),  # the Windows programs `porta selftest` runs
 }
+STAMP = ".porta-release"
+UNSTAMPED = "runtimes-3"
 
 # DLLs that must also sit in the prefix's system dirs (DXMT install guide).
 PREFIX_DLLS = {"dxmt": ["winemetal.dll"], "d3dmetal": ["nvngx.dll", "_nvngx.dll"]}
@@ -138,11 +142,13 @@ def fetch(archive):
 
 
 def install_prebuilt(name):
-    """Unpack RUNTIMES/<name> from the project's release. False if the release doesn't have it."""
-    base = f"{RELEASES}/{RUNTIME_RELEASE}"
+    """Unpack RUNTIMES/<name> from its release, in place of the one there. False if
+    the release doesn't have it."""
+    release = PREBUILT[name][2]
+    base = f"{RELEASES}/{release}"
     try:
-        sums = download(f"{base}/SHA256SUMS", f"SHA256SUMS-{RUNTIME_RELEASE}")
-        tarball = download(f"{base}/{name}.tar.xz", f"{name}-{RUNTIME_RELEASE}.tar.xz")
+        sums = download(f"{base}/SHA256SUMS", f"SHA256SUMS-{release}")
+        tarball = download(f"{base}/{name}.tar.xz", f"{name}-{release}.tar.xz")
     except subprocess.CalledProcessError:
         return False
     expected = dict(line.split()[::-1] for line in sums.read_text().splitlines() if line.strip())
@@ -158,20 +164,39 @@ def install_prebuilt(name):
     shutil.rmtree(tmp, ignore_errors=True)
     tmp.mkdir(parents=True)
     subprocess.run(["tar", "-xf", tarball, "-C", tmp], check=True)
-    (tmp / name).rename(RUNTIMES / name)
+    (tmp / name / STAMP).write_text(release + "\n")
+    dest, old = RUNTIMES / name, RUNTIMES / f".old-{name}"
+    if dest.exists():
+        shutil.rmtree(old, ignore_errors=True)
+        dest.rename(old)
+    (tmp / name).rename(dest)
     tmp.rmdir()
-    print(f"installed {name}")
+    shutil.rmtree(old, ignore_errors=True)
+    # runtimes cloned from the old one (wine-cx-...+dxmt) are made again when used
+    for derived in RUNTIMES.glob(f"{name}+*"):
+        shutil.rmtree(derived)
+    print(f"installed {name} ({release})")
     return True
 
 
+def outdated(name):
+    """Whether the installed runtime is from another release than porta's."""
+    dest = RUNTIMES / name
+    if not dest.exists():
+        return False
+    stamp = dest / STAMP
+    return (stamp.read_text().strip() if stamp.exists() else UNSTAMPED) != PREBUILT[name][2]
+
+
 def build_from_source(name):
-    script, version = PREBUILT[name]
+    script, version, release = PREBUILT[name]
     print(f"building {name} from source, this takes a while")
     out = [RUNTIMES / name] if name == "selftests" else [version]
     env = dict(os.environ, PORTA_HOME=str(HOME))
     if ".app/" in str(ROOT):  # the copy inside Portamento.app: keep build trees out of the bundle
         env["PORTA_BUILD"] = str(HOME / "build")
     subprocess.run([ROOT / script, *out], check=True, env=env)
+    (RUNTIMES / name / STAMP).write_text(release + "\n")  # the same sources the release is built from
 
 
 def link_cx_libraries():
@@ -199,6 +224,15 @@ def setup_missing():
     missing += [n for n in PREBUILT if not (RUNTIMES / n).exists()
                 and not (n == "selftests" and (ROOT / "tests/d3d11test.exe").exists())]
     return missing
+
+
+def setup_updates():
+    """Installed runtimes `porta setup` would replace with newer ones."""
+    return [n for n in PREBUILT if outdated(n)]
+
+
+def running_prefixes():
+    return [cfg.parent.name for cfg in sorted(PREFIXES.glob("*/porta.json")) if server_running(cfg.parent.name)]
 
 
 def selftest_exe(name):
@@ -464,7 +498,17 @@ def cmd_setup(args):
         shutil.rmtree(tmp, ignore_errors=True)
         subprocess.run(["cp", "-cR", WINE_APP, tmp], check=True)
         tmp.rename(base)
+    busy = running_prefixes()
     for name in PREBUILT:
+        if outdated(name):
+            # a running prefix has the old one's files open, and clones of it are deleted
+            if busy:
+                print(f"skipping the update of {name}: stop {', '.join(busy)} first (porta kill)")
+            elif args.build:
+                print(f"{name} is from another release: delete {RUNTIMES / name} to build it again")
+            elif not install_prebuilt(name):
+                print(f"couldn't download {name} from {PREBUILT[name][2]}, keeping the installed one")
+            continue
         if (RUNTIMES / name).exists() or (name == "selftests" and (ROOT / "tests/d3d11test.exe").exists()):
             continue
         if args.build or not install_prebuilt(name):
@@ -758,7 +802,7 @@ def cmd_list(args):
             "d3dmetal": [n for n, _ in d3dmetal_sources()],
             "vulkan": {v: icd is None or icd.exists() for v, icd in VULKAN_DRIVERS.items()},
             "defaults": {"wine": DEFAULT_WINE, "gfx": DEFAULT_GFX},
-            "setup": {"missing": setup_missing()},
+            "setup": {"missing": setup_missing(), "updates": setup_updates()},
         }, indent=2))
         return
     for n, c in prefixes:

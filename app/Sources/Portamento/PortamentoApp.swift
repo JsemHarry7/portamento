@@ -7,15 +7,21 @@ import SwiftUI
 @main
 struct PortamentoApp: App {
     private let library = Library()
+    private let updater = AppUpdater()
     @StateObject private var content = ContentState()
 
     var body: some Scene {
         WindowGroup("Portamento") {
             ContentView()
                 .environment(library)
+                .environment(updater)
                 .environmentObject(content)
                 .tint(Theme.accent)
-                .task { await library.reload() }
+                .task {
+                    await library.reload()
+                    if updater.updatedFrom != nil { await library.updateRuntimesIfIdle() }
+                }
+                .task { await updater.checkPeriodically() }
                 // an installer opened with Portamento (Finder's Open With, or `open -a`)
                 .onOpenURL { url in
                     guard url.isFileURL, ["exe", "msi"].contains(url.pathExtension.lowercased()) else { return }
@@ -33,6 +39,13 @@ struct PortamentoApp: App {
         }
         .defaultSize(width: 1100, height: 720)
         .commands {
+            CommandGroup(after: .appInfo) {
+                Button("Vyhledat aktualizace…") {
+                    content.showingUpdate = true
+                    Task { await updater.check() }
+                }
+                .disabled(updater.isBusy)
+            }
             CommandGroup(replacing: .newItem) {
                 Button("Nainstalovat Steam…") { content.installing = InstallRequest(source: .steam) }
                     .keyboardShortcut("n", modifiers: [.command, .shift])
@@ -60,6 +73,7 @@ final class ContentState: ObservableObject {
     @Published var selection: SidebarItem? = .library
     @Published var creatingPrefix = false
     @Published var installing: InstallRequest?
+    @Published var showingUpdate = false
 }
 
 struct ContentView: View {
@@ -115,6 +129,7 @@ struct ContentView: View {
         }
         .sheet(isPresented: $state.creatingPrefix) { NewPrefixSheet() }
         .sheet(item: $state.installing) { request in InstallSheet(request: request) }
+        .sheet(isPresented: $state.showingUpdate) { UpdateSheet() }
         .alert("Něco se nepovedlo", isPresented: Binding(get: { library.error != nil },
                                                         set: { if !$0 { library.error = nil } })) {
             Button("OK") { library.error = nil }

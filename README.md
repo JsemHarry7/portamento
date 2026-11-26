@@ -32,6 +32,16 @@ open it once, then click **Open Anyway** in System Settings → Privacy & Securi
 (or run `xattr -dr com.apple.quarantine /Applications/Portamento.app`). On first
 start it downloads what it needs, with `porta` bundled inside.
 
+**Updates** come from inside the app. A release build looks for a newer `app-…`
+release when it starts and every few hours (Portamento › Check for Updates…
+any time) and shows it above the library with its release notes. **Update**
+downloads the zip, checks it (GitHub's SHA-256, the bundle ID, the version, the
+code signature), puts it in place of the running app and opens it again; games
+keep running, and prefixes and settings stay where they are. Right after, the
+new version downloads the runtimes it wants (newer Wine, say), unless a game or
+Steam runs, in which case the banner offers to end them first. From a checkout,
+`git pull` and `porta setup` do the same.
+
 **From source**, with the `porta` command line tool:
 
 ```sh
@@ -177,8 +187,12 @@ need Homebrew packages, listed at the top of each script:
 
 The [Runtimes workflow](.github/workflows/runtimes.yml) runs the same
 scripts on GitHub's macOS runners and publishes the results, with their exact
-patched sources, as a `runtimes-N` release. `porta` downloads the release named
-in `RUNTIME_RELEASE` and checks each archive against its `SHA256SUMS`.
+patched sources, as a `runtimes-N` release that holds the runtimes that
+changed. Each entry in porta's `PREBUILT` names the release it comes from;
+`porta` checks every archive against that release's `SHA256SUMS`, writes the
+release into the runtime as `.porta-release`, and `porta setup` replaces a
+runtime from an older release (not while a prefix runs; runtimes cloned from it
+are made again the next time a prefix uses them).
 
 ## D3DMetal and the Game Porting Toolkit
 
